@@ -1,15 +1,21 @@
-import type { Hono } from "hono";
-import type { AppBindings } from "../../core/http/app-bindings";
-import { notFound } from "../../core/http/api-error";
-import { idParamSchema, requireActor } from "../../core/http/request";
-import { ACTIVITY_SERVICE } from "./activity.tokens";
+import type { Hono } from 'hono';
+import { notFound } from '../../core/http/api-error';
+import type { AppBindings } from '../../core/http/app-bindings';
+import { idParamSchema, requireActor } from '../../core/http/request';
+import type { ActivityService } from './activity.service';
 
 export class ActivityController {
+  constructor(private readonly activityService: ActivityService) {}
+
   mount(app: Hono<AppBindings>): void {
-    app.get("/api/projects/:id/activity", async (c) => {
-      const id = idParamSchema.safeParse(c.req.param("id"));
-      if (!id.success) throw notFound("Project");
-      const data = await c.get("container").resolve(ACTIVITY_SERVICE).list(requireActor(c), id.data, c.req.query("cursor"));
+    app.get('/api/projects/:id/activity', async (c) => {
+      const actor = requireActor(c);
+      const projectId = idParamSchema.safeParse(c.req.param('id'));
+      if (!projectId.success) throw notFound('Project');
+
+      const cursor = c.req.query('cursor');
+      const data = await this.activityService.list(actor, projectId.data, cursor);
+
       return c.json({ data });
     });
   }

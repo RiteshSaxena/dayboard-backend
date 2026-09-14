@@ -1,19 +1,19 @@
-import type { EmailContent, OutgoingEmail } from "./mail.types";
+import type { EmailContent, OutgoingEmail } from './mail.types';
 
 const escapeHtml = (value: string): string =>
   value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 
 export function renderEmail(to: string, content: EmailContent): OutgoingEmail {
   const subject = escapeHtml(content.subject);
   const ctaUrl = escapeHtml(content.ctaUrl);
   const body = content.paragraphs
     .map((paragraph) => `<p style="margin:0 0 12px;">${escapeHtml(paragraph)}</p>`)
-    .join("");
+    .join('');
 
   const html = `<!doctype html>
 <html lang="en">
@@ -50,14 +50,14 @@ export function renderEmail(to: string, content: EmailContent): OutgoingEmail {
 
   const text = [
     content.heading,
-    "",
-    ...content.paragraphs.flatMap((paragraph) => [paragraph, ""]),
+    '',
+    ...content.paragraphs.flatMap((paragraph) => [paragraph, '']),
     content.ctaLabel,
     content.ctaUrl,
-    "",
+    '',
     content.footer,
-    "dayboard.space",
-  ].join("\n");
+    'dayboard.space',
+  ].join('\n');
 
   return { to, subject: content.subject, html, text };
 }

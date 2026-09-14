@@ -1,4 +1,4 @@
-import type { Session, User } from "../../database/schema";
+import type { Session, User } from '../../database/schema';
 
 export interface AuthActor {
   user: User;

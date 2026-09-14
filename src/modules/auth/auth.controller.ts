@@ -1,7 +1,6 @@
-import type { Hono } from "hono";
-import { parseJson, requireActor } from "../../core/http/request";
-import type { AppBindings } from "../../core/http/app-bindings";
-import { AUTH_SERVICE } from "./auth.tokens";
+import type { Hono } from 'hono';
+import type { AppBindings } from '../../core/http/app-bindings';
+import { parseJson, requireActor } from '../../core/http/request';
 import {
   changePasswordSchema,
   resetRequestSchema,
@@ -10,52 +9,89 @@ import {
   signupSchema,
   updateMeSchema,
   verifySchema,
-} from "./auth.schemas";
+} from './auth.schemas';
+import type { AuthService } from './auth.service';
 
 export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
   mount(app: Hono<AppBindings>): void {
-    app.post("/api/auth/signup", async (c) => {
-      const result = await c.get("container").resolve(AUTH_SERVICE).signup(await parseJson(c, signupSchema));
-      return c.json({ data: result }, 201);
+    app.post('/api/auth/signup', async (c) => {
+      const input = await parseJson(c, signupSchema);
+      const data = await this.authService.signup(input);
+
+      return c.json({ data }, 201);
     });
-    app.post("/api/auth/signin", async (c) => {
-      const result = await c.get("container").resolve(AUTH_SERVICE).signin(await parseJson(c, signinSchema));
-      return c.json({ data: result });
+
+    app.post('/api/auth/signin', async (c) => {
+      const input = await parseJson(c, signinSchema);
+      const data = await this.authService.signin(input);
+
+      return c.json({ data });
     });
-    app.post("/api/auth/signout", async (c) => {
-      await c.get("container").resolve(AUTH_SERVICE).signout(requireActor(c));
+
+    app.post('/api/auth/signout', async (c) => {
+      const actor = requireActor(c);
+      await this.authService.signout(actor);
+
       return c.json({ data: { success: true } });
     });
-    app.post("/api/auth/signout-all", async (c) => {
-      await c.get("container").resolve(AUTH_SERVICE).signoutAll(requireActor(c));
+
+    app.post('/api/auth/signout-all', async (c) => {
+      const actor = requireActor(c);
+      await this.authService.signoutAll(actor);
+
       return c.json({ data: { success: true } });
     });
-    app.post("/api/auth/verify/resend", async (c) => {
-      await c.get("container").resolve(AUTH_SERVICE).resendVerification(requireActor(c));
+
+    app.post('/api/auth/verify/resend', async (c) => {
+      const actor = requireActor(c);
+      await this.authService.resendVerification(actor);
+
       return c.json({ data: { success: true } });
     });
-    app.post("/api/auth/verify", async (c) => {
+
+    app.post('/api/auth/verify', async (c) => {
       const input = await parseJson(c, verifySchema);
-      await c.get("container").resolve(AUTH_SERVICE).verifyEmail(input.token);
+      await this.authService.verifyEmail(input.token);
+
       return c.json({ data: { success: true } });
     });
-    app.post("/api/auth/reset/request", async (c) => {
-      await c.get("container").resolve(AUTH_SERVICE).requestReset(await parseJson(c, resetRequestSchema));
+
+    app.post('/api/auth/reset/request', async (c) => {
+      const input = await parseJson(c, resetRequestSchema);
+      await this.authService.requestReset(input);
+
       return c.json({ data: { success: true } });
     });
-    app.post("/api/auth/reset", async (c) => {
+
+    app.post('/api/auth/reset', async (c) => {
       const input = await parseJson(c, resetSchema);
-      await c.get("container").resolve(AUTH_SERVICE).resetPassword(input.token, input.password);
+      await this.authService.resetPassword(input.token, input.password);
+
       return c.json({ data: { success: true } });
     });
-    app.get("/api/me", async (c) => c.json({ data: await c.get("container").resolve(AUTH_SERVICE).me(requireActor(c)) }));
-    app.patch("/api/me", async (c) => {
-      const result = await c.get("container").resolve(AUTH_SERVICE).updateMe(requireActor(c), await parseJson(c, updateMeSchema));
-      return c.json({ data: result });
+
+    app.get('/api/me', async (c) => {
+      const actor = requireActor(c);
+      const data = await this.authService.me(actor);
+
+      return c.json({ data });
     });
-    app.patch("/api/me/password", async (c) => {
+
+    app.patch('/api/me', async (c) => {
+      const actor = requireActor(c);
+      const input = await parseJson(c, updateMeSchema);
+      const data = await this.authService.updateMe(actor, input);
+
+      return c.json({ data });
+    });
+
+    app.patch('/api/me/password', async (c) => {
+      const actor = requireActor(c);
       const input = await parseJson(c, changePasswordSchema);
-      await c.get("container").resolve(AUTH_SERVICE).changePassword(requireActor(c), input.current, input.next);
+      await this.authService.changePassword(actor, input.current, input.next);
+
       return c.json({ data: { success: true } });
     });
   }

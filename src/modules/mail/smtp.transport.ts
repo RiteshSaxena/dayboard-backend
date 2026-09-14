@@ -1,6 +1,6 @@
-import { LogLevel, WorkerMailer } from "worker-mailer";
-import type { RuntimeContext } from "../../core/runtime/runtime-context";
-import type { OutgoingEmail } from "./mail.types";
+import { LogLevel, WorkerMailer } from 'worker-mailer';
+import type { RuntimeContext } from '../../core/runtime/runtime-context';
+import type { OutgoingEmail } from './mail.types';
 
 export class SmtpTransport {
   constructor(private readonly runtime: RuntimeContext) {}
@@ -13,13 +13,13 @@ export class SmtpTransport {
       {
         host: env.SMTP_HOST,
         port: Number(env.SMTP_PORT),
-        secure: security === "tls",
-        startTls: security === "starttls",
+        secure: security === 'tls',
+        startTls: security === 'starttls',
         credentials: {
           username: env.SMTP_USERNAME,
           password: env.SMTP_PASSWORD,
         },
-        authType: ["plain", "login"],
+        authType: ['plain', 'login'],
         logLevel: LogLevel.ERROR,
         socketTimeoutMs: 15_000,
         responseTimeoutMs: 15_000,

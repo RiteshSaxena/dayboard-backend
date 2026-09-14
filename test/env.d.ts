@@ -1,6 +1,6 @@
 declare namespace Cloudflare {
   interface GlobalProps {
-    mainModule: typeof import("../src/index");
+    mainModule: typeof import('../src/index');
   }
 
   interface Env {

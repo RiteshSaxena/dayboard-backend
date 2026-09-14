@@ -1,15 +1,14 @@
-import { AppModule } from "./app.module";
-import { PURGE_SERVICE } from "./modules/maintenance/maintenance.tokens";
-
-const application = new AppModule();
+import { AppModule } from './app.module';
+import { createDatabase } from './database/database';
+import { PurgeService } from './modules/maintenance/purge.service';
 
 export default {
   fetch(request, env, ctx) {
-    return application.app.fetch(request, env, ctx);
+    const app = new AppModule({ env, executionCtx: ctx, request });
+    return app.app.fetch(request, env, ctx);
   },
-  async scheduled(controller, env, ctx) {
-    const request = new Request(`https://api.dayboard.space/__scheduled?cron=${encodeURIComponent(controller.cron)}`);
-    const result = await application.createScope(env, ctx, request).resolve(PURGE_SERVICE).run(controller.scheduledTime);
-    console.log(JSON.stringify({ message: "purge complete", ...result }));
+  async scheduled(controller, env) {
+    const result = await new PurgeService(createDatabase(env.DB)).run(controller.scheduledTime);
+    console.log(JSON.stringify({ message: 'purge complete', ...result }));
   },
 } satisfies ExportedHandler<Env>;

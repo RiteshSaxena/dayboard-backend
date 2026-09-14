@@ -1,45 +1,107 @@
-import type { Hono } from "hono";
-import type { AppBindings } from "../../core/http/app-bindings";
-import { notFound } from "../../core/http/api-error";
-import { idParamSchema, parseJson, requireActor } from "../../core/http/request";
-import { createTaskSchema, moveTaskSchema, taskQuerySchema, updateTaskSchema } from "./task.schemas";
-import { TASK_SERVICE } from "./task.tokens";
+import type { Hono } from 'hono';
+import { notFound } from '../../core/http/api-error';
+import type { AppBindings } from '../../core/http/app-bindings';
+import { idParamSchema, parseJson, requireActor } from '../../core/http/request';
+import {
+  createTaskSchema,
+  moveTaskSchema,
+  taskQuerySchema,
+  updateTaskSchema,
+} from './task.schemas';
+import type { TaskService } from './task.service';
 
-const id = (value: string): string => {
-  const parsed = idParamSchema.safeParse(value);
-  if (!parsed.success) throw notFound("Resource");
-  return parsed.data;
+const parseId = (value: string): string => {
+  const result = idParamSchema.safeParse(value);
+  if (!result.success) throw notFound('Resource');
+  return result.data;
 };
 
 export class TaskController {
+  constructor(private readonly taskService: TaskService) {}
+
   mount(app: Hono<AppBindings>): void {
-    app.get("/api/projects/:id/tasks", async (c) => {
+    app.get('/api/projects/:id/tasks', async (c) => {
+      const actor = requireActor(c);
+      const projectId = parseId(c.req.param('id'));
       const query = taskQuerySchema.parse(c.req.query());
-      return c.json({ data: await c.get("container").resolve(TASK_SERVICE).list(requireActor(c), id(c.req.param("id")), query) });
+      const data = await this.taskService.list(actor, projectId, query);
+
+      return c.json({ data });
     });
-    app.post("/api/projects/:id/tasks", async (c) => {
-      const data = await c.get("container").resolve(TASK_SERVICE).create(requireActor(c), id(c.req.param("id")), await parseJson(c, createTaskSchema));
+
+    app.post('/api/projects/:id/tasks', async (c) => {
+      const actor = requireActor(c);
+      const projectId = parseId(c.req.param('id'));
+      const input = await parseJson(c, createTaskSchema);
+      const data = await this.taskService.create(actor, projectId, input);
+
       return c.json({ data }, 201);
     });
-    app.patch("/api/tasks/:id", async (c) =>
-      c.json({ data: await c.get("container").resolve(TASK_SERVICE).update(requireActor(c), id(c.req.param("id")), await parseJson(c, updateTaskSchema)) }));
-    app.post("/api/tasks/:id/move", async (c) => {
-      const input = await parseJson(c, moveTaskSchema);
-      return c.json({ data: await c.get("container").resolve(TASK_SERVICE).move(requireActor(c), id(c.req.param("id")), input.status) });
+
+    app.patch('/api/tasks/:id', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const input = await parseJson(c, updateTaskSchema);
+      const data = await this.taskService.update(actor, taskId, input);
+
+      return c.json({ data });
     });
-    app.post("/api/tasks/:id/archive", async (c) =>
-      c.json({ data: await c.get("container").resolve(TASK_SERVICE).archive(requireActor(c), id(c.req.param("id"))) }));
-    app.post("/api/tasks/:id/unarchive", async (c) =>
-      c.json({ data: await c.get("container").resolve(TASK_SERVICE).unarchive(requireActor(c), id(c.req.param("id"))) }));
-    app.delete("/api/tasks/:id", async (c) => {
-      await c.get("container").resolve(TASK_SERVICE).remove(requireActor(c), id(c.req.param("id")));
+
+    app.post('/api/tasks/:id/move', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const input = await parseJson(c, moveTaskSchema);
+      const data = await this.taskService.move(actor, taskId, input.status);
+
+      return c.json({ data });
+    });
+
+    app.post('/api/tasks/:id/archive', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const data = await this.taskService.archive(actor, taskId);
+
+      return c.json({ data });
+    });
+
+    app.post('/api/tasks/:id/unarchive', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const data = await this.taskService.unarchive(actor, taskId);
+
+      return c.json({ data });
+    });
+
+    app.delete('/api/tasks/:id', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      await this.taskService.remove(actor, taskId);
+
       return c.json({ data: { success: true } });
     });
-    app.post("/api/tasks/:id/restore", async (c) =>
-      c.json({ data: await c.get("container").resolve(TASK_SERVICE).restore(requireActor(c), id(c.req.param("id"))) }));
-    app.post("/api/projects/:id/tasks/archive-done", async (c) =>
-      c.json({ data: await c.get("container").resolve(TASK_SERVICE).archiveDone(requireActor(c), id(c.req.param("id"))) }));
-    app.get("/api/orgs/:orgId/tasks/mine", async (c) =>
-      c.json({ data: await c.get("container").resolve(TASK_SERVICE).mine(requireActor(c), id(c.req.param("orgId"))) }));
+
+    app.post('/api/tasks/:id/restore', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const data = await this.taskService.restore(actor, taskId);
+
+      return c.json({ data });
+    });
+
+    app.post('/api/projects/:id/tasks/archive-done', async (c) => {
+      const actor = requireActor(c);
+      const projectId = parseId(c.req.param('id'));
+      const data = await this.taskService.archiveDone(actor, projectId);
+
+      return c.json({ data });
+    });
+
+    app.get('/api/orgs/:orgId/tasks/mine', async (c) => {
+      const actor = requireActor(c);
+      const orgId = parseId(c.req.param('orgId'));
+      const data = await this.taskService.mine(actor, orgId);
+
+      return c.json({ data });
+    });
   }
 }

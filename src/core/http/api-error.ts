@@ -1,13 +1,13 @@
 export type ApiErrorCode =
-  | "unauthenticated"
-  | "forbidden"
-  | "not_found"
-  | "validation"
-  | "conflict"
-  | "rate_limited"
-  | "expired"
-  | "unverified"
-  | "internal";
+  | 'unauthenticated'
+  | 'forbidden'
+  | 'not_found'
+  | 'validation'
+  | 'conflict'
+  | 'rate_limited'
+  | 'expired'
+  | 'unverified'
+  | 'internal';
 
 export class ApiError extends Error {
   constructor(
@@ -17,21 +17,21 @@ export class ApiError extends Error {
     public readonly field?: string,
   ) {
     super(message);
-    this.name = "ApiError";
+    this.name = 'ApiError';
   }
 }
 
 export const badRequest = (message: string, field?: string): ApiError =>
-  new ApiError(422, "validation", message, field);
+  new ApiError(422, 'validation', message, field);
 
 export const unauthenticated = (): ApiError =>
-  new ApiError(401, "unauthenticated", "Authentication is required");
+  new ApiError(401, 'unauthenticated', 'Authentication is required');
 
-export const forbidden = (message = "You do not have permission to do that"): ApiError =>
-  new ApiError(403, "forbidden", message);
+export const forbidden = (message = 'You do not have permission to do that'): ApiError =>
+  new ApiError(403, 'forbidden', message);
 
 export const notFound = (resource: string): ApiError =>
-  new ApiError(404, "not_found", `${resource} was not found`);
+  new ApiError(404, 'not_found', `${resource} was not found`);
 
 export const conflict = (message: string, field?: string): ApiError =>
-  new ApiError(409, "conflict", message, field);
+  new ApiError(409, 'conflict', message, field);

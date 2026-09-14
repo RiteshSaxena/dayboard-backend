@@ -1,26 +1,26 @@
-import type { Context } from "hono";
-import { z, type ZodType } from "zod";
-import type { AppBindings } from "./app-bindings";
-import { ApiError, badRequest, unauthenticated } from "./api-error";
+import type { Context } from 'hono';
+import { z, type ZodType } from 'zod';
+import type { AppBindings } from './app-bindings';
+import { ApiError, badRequest, unauthenticated } from './api-error';
 
 export async function parseJson<T>(c: Context<AppBindings>, schema: ZodType<T>): Promise<T> {
   let body: unknown;
   try {
     body = await c.req.json();
   } catch {
-    throw badRequest("Request body must be valid JSON");
+    throw badRequest('Request body must be valid JSON');
   }
 
   const result = schema.safeParse(body);
   if (!result.success) {
     const issue = result.error.issues[0];
-    throw badRequest(issue?.message ?? "Invalid request", issue?.path.join(".") || undefined);
+    throw badRequest(issue?.message ?? 'Invalid request', issue?.path.join('.') || undefined);
   }
   return result.data;
 }
 
 export function requireActor(c: Context<AppBindings>) {
-  const actor = c.get("actor");
+  const actor = c.get('actor');
   if (!actor) throw unauthenticated();
   return actor;
 }
@@ -35,7 +35,7 @@ export function parseCursor(value: string | undefined): { position: number; id: 
     if (!result.success) throw new Error();
     return result.data;
   } catch {
-    throw new ApiError(422, "validation", "Invalid cursor", "cursor");
+    throw new ApiError(422, 'validation', 'Invalid cursor', 'cursor');
   }
 }
 

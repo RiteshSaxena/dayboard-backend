@@ -8,6 +8,8 @@
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run",
     "typecheck": "tsc --noEmit",
+    "format": "prettier --write 'src/**/*.ts' 'test/**/*.ts' '*.{json,jsonc,ts,md}'",
+    "format:check": "prettier --check 'src/**/*.ts' 'test/**/*.ts' '*.{json,jsonc,ts,md}'",
     "cf-typegen": "wrangler types",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply dayboard --local",
@@ -25,6 +27,7 @@
     "@cloudflare/vitest-plugin": "^1.1.9",
     "@types/node": "^26.5.1",
     "drizzle-kit": "latest",
+    "prettier": "^3.9.6",
     "typescript": "latest",
     "vitest": "latest",
     "wrangler": "latest"
