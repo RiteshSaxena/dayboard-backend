@@ -1,0 +1,35 @@
+{
+  "name": "dayboard-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply dayboard --local",
+    "db:migrate:remote": "wrangler d1 migrations apply dayboard --remote",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "latest",
+    "drizzle-orm": "latest",
+    "hono": "latest",
+    "worker-mailer": "^1.2.1",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.9",
+    "@types/node": "^26.5.1",
+    "drizzle-kit": "latest",
+    "typescript": "latest",
+    "vitest": "latest",
+    "wrangler": "latest"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
