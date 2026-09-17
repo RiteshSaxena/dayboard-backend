@@ -17,6 +17,8 @@ import { CommentService } from './modules/comment/comment.service';
 import { MailService } from './modules/mail/mail.service';
 import { NoteController } from './modules/note/note.controller';
 import { NoteService } from './modules/note/note.service';
+import { NotificationController } from './modules/notification/notification.controller';
+import { NotificationService } from './modules/notification/notification.service';
 import { OrgController } from './modules/org/org.controller';
 import { OrgService } from './modules/org/org.service';
 import { ProjectController } from './modules/project/project.controller';
@@ -61,6 +63,7 @@ export class AppModule {
       mailService,
       activityService,
     );
+    const notificationService = new NotificationService(db, mailService, rateLimitService, runtime);
     const stageService = new StageService(db, authorizationService, activityService);
     const taskTypeService = new TaskTypeService(db, authorizationService, activityService);
     const projectService = new ProjectService(
@@ -75,9 +78,15 @@ export class AppModule {
       activityService,
       stageService,
       taskTypeService,
+      notificationService,
     );
     const noteService = new NoteService(db, authorizationService, activityService);
-    const commentService = new CommentService(db, authorizationService, activityService);
+    const commentService = new CommentService(
+      db,
+      authorizationService,
+      activityService,
+      notificationService,
+    );
 
     this.configureMiddleware(authService);
     new AuthController(authService).mount(this.app);
@@ -87,6 +96,7 @@ export class AppModule {
     new TaskTypeController(taskTypeService).mount(this.app);
     new TaskController(taskService).mount(this.app);
     new CommentController(commentService).mount(this.app);
+    new NotificationController(notificationService).mount(this.app);
     new NoteController(noteService).mount(this.app);
     new ActivityController(activityService).mount(this.app);
     this.configureFallbacks();

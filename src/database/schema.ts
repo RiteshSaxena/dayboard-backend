@@ -291,6 +291,32 @@ export const notes = sqliteTable(
   ],
 );
 
+export const commentMentions = sqliteTable(
+  'comment_mentions',
+  {
+    commentId: text('comment_id', { length: 21 })
+      .notNull()
+      .references(() => comments.id, { onDelete: 'cascade' }),
+    userId: text('user_id', { length: 21 })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.commentId, table.userId] }),
+    index('comment_mentions_user_idx').on(table.userId),
+  ],
+);
+
+export const notificationPreferences = sqliteTable('notification_preferences', {
+  userId: text('user_id', { length: 21 })
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  emailAssigned: integer('email_assigned', { mode: 'boolean' }).notNull().default(true),
+  emailComments: integer('email_comments', { mode: 'boolean' }).notNull().default(true),
+  emailMentions: integer('email_mentions', { mode: 'boolean' }).notNull().default(true),
+  updatedAt: integer('updated_at').notNull(),
+});
+
 export const activity = sqliteTable(
   'activity',
   {
@@ -311,7 +337,10 @@ export const activity = sqliteTable(
     payload: text('payload', { mode: 'json' }).$type<Record<string, unknown>>().notNull(),
     createdAt: integer('created_at').notNull(),
   },
-  (table) => [index('activity_project_created_idx').on(table.projectId, table.createdAt)],
+  (table) => [
+    index('activity_project_created_idx').on(table.projectId, table.createdAt),
+    index('activity_task_created_idx').on(table.taskId, table.createdAt),
+  ],
 );
 
 export type User = typeof users.$inferSelect;
@@ -324,4 +353,5 @@ export type TaskType = typeof taskTypes.$inferSelect;
 export type ProjectStage = typeof projectStages.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
+export type NotificationPreferences = typeof notificationPreferences.$inferSelect;
 export type Note = typeof notes.$inferSelect;

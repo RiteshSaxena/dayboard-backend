@@ -14,7 +14,7 @@
     "APP_URL": "https://dayboard.space",
     "ALLOWED_ORIGINS": "https://dayboard.space",
     "TURNSTILE_HOSTNAMES": "dayboard.space",
-    "EMAIL_FROM": "Dayboard <no-reply@dayboard.space>",
+    "EMAIL_FROM": "Dayboard <alerts@dayboard.space>",
     "EMAIL_REPLY_TO": "hello@dayboard.space",
     "SMTP_PORT": "587",
     "SMTP_SECURITY": "starttls",

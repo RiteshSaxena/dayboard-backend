@@ -22,6 +22,7 @@ import { memberships, projects, tasks, type Project, type Task } from '../../dat
 import type { ActivityService } from '../activity/activity.service';
 import type { AuthActor } from '../auth/auth.types';
 import type { AuthorizationService } from '../authorization/authorization.service';
+import type { NotificationService } from '../notification/notification.service';
 import { stageAssignment, type StageCategory, type StageService } from '../stage/stage.service';
 import type { TaskTypeService } from '../task-type/task-type.service';
 
@@ -40,6 +41,34 @@ interface TaskInput {
 }
 
 export type SubtaskCounts = Map<string, { total: number; done: number }>;
+
+/** Task fields a history view reports, in the order changes are listed. */
+const TRACKED_FIELDS = [
+  'title',
+  'description',
+  'projectId',
+  'stageId',
+  'typeId',
+  'assigneeId',
+  'dueDate',
+  'archivedAt',
+] as const;
+
+export type TaskChange = {
+  field: (typeof TRACKED_FIELDS)[number];
+  from?: string | number | null;
+  to?: string | number | null;
+};
+
+/**
+ * What an update changed, for `task.updated` activity. Descriptions can be long, so their change is
+ * noted without the old and new text.
+ */
+export function taskChanges(before: Task, after: Task): TaskChange[] {
+  return TRACKED_FIELDS.filter((field) => before[field] !== after[field]).map((field) =>
+    field === 'description' ? { field } : { field, from: before[field], to: after[field] },
+  );
+}
 
 export function countSubtasks(rows: Pick<Task, 'parentId' | 'status'>[]): SubtaskCounts {
   const counts: SubtaskCounts = new Map();
@@ -68,6 +97,7 @@ export class TaskService {
     private readonly activity: ActivityService,
     private readonly stages: StageService,
     private readonly taskTypes: TaskTypeService,
+    private readonly notifications: NotificationService,
   ) {}
 
   /** Lists top-level tasks; subtasks are fetched through their parent. */
@@ -197,7 +227,11 @@ export class TaskService {
       this.db.update(tasks).set(patch).where(eq(tasks.id, id)),
       ...subtaskUpdates,
     ]);
-    return this.recordUpdate(actor, current.project, id);
+    const task = await this.recordUpdate(actor, current.project, current.task);
+    if (input.assigneeId !== undefined) {
+      this.notifications.taskAssigned(actor, task, current.task.assigneeId);
+    }
+    return task;
   }
 
   async move(actor: AuthActor, id: string, input: { stageId?: string; status?: Task['status'] }) {
@@ -227,7 +261,7 @@ export class TaskService {
           .where(and(eq(tasks.parentId, id), isNotNull(tasks.archivedAt))),
       ]);
     }
-    return this.recordUpdate(actor, current.project, id);
+    return this.recordUpdate(actor, current.project, current.task);
   }
 
   async archive(actor: AuthActor, id: string) {
@@ -245,7 +279,7 @@ export class TaskService {
         .set({ archivedAt: timestamp, updatedAt: timestamp })
         .where(and(eq(tasks.parentId, id), isNull(tasks.archivedAt))),
     ]);
-    return this.recordUpdate(actor, current.project, id);
+    return this.recordUpdate(actor, current.project, current.task);
   }
 
   async unarchive(actor: AuthActor, id: string) {
@@ -259,7 +293,7 @@ export class TaskService {
         .set({ archivedAt: null, updatedAt: timestamp })
         .where(and(eq(tasks.parentId, id), isNotNull(tasks.archivedAt))),
     ]);
-    return this.recordUpdate(actor, current.project, id);
+    return this.recordUpdate(actor, current.project, current.task);
   }
 
   async remove(actor: AuthActor, id: string): Promise<void> {
@@ -426,19 +460,21 @@ export class TaskService {
       kind: 'task.created',
       payload: task,
     });
+    this.notifications.taskAssigned(actor, task, null);
     return task;
   }
 
-  private async recordUpdate(actor: AuthActor, project: Project, id: string) {
-    const task = await this.findTaskById(id);
+  /** Records `task.updated` with the task after the change and what changed since `before`. */
+  private async recordUpdate(actor: AuthActor, project: Project, before: Task) {
+    const task = await this.findTaskById(before.id);
     if (!task) throw notFound('Task');
     await this.activity.record({
       orgId: project.orgId,
       projectId: task.projectId,
-      taskId: id,
+      taskId: task.id,
       actorId: actor.user.id,
       kind: 'task.updated',
-      payload: task,
+      payload: { ...task, changes: taskChanges(before, task) },
     });
     return task;
   }

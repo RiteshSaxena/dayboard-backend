@@ -2,7 +2,12 @@ import type { Hono } from 'hono';
 import { notFound } from '../../core/http/api-error';
 import type { AppBindings } from '../../core/http/app-bindings';
 import { idParamSchema, parseJson, requireActor } from '../../core/http/request';
-import { commentQuerySchema, createCommentSchema, updateCommentSchema } from './comment.schemas';
+import {
+  commentQuerySchema,
+  createCommentSchema,
+  mentionQuerySchema,
+  updateCommentSchema,
+} from './comment.schemas';
 import type { CommentService } from './comment.service';
 
 const parseId = (value: string): string => {
@@ -15,6 +20,14 @@ export class CommentController {
   constructor(private readonly commentService: CommentService) {}
 
   mount(app: Hono<AppBindings>): void {
+    app.get('/api/me/mentions', async (c) => {
+      const actor = requireActor(c);
+      const query = mentionQuerySchema.parse(c.req.query());
+      const data = await this.commentService.mentionsFor(actor, query.cursor, query.orgId);
+
+      return c.json({ data });
+    });
+
     app.get('/api/tasks/:id/comments', async (c) => {
       const actor = requireActor(c);
       const taskId = parseId(c.req.param('id'));

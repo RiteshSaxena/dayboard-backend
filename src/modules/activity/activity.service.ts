@@ -1,11 +1,13 @@
-import { and, desc, eq, lt, or } from 'drizzle-orm';
+import { and, desc, eq, inArray, lt, or, type SQL } from 'drizzle-orm';
 import { makeTimeCursor, parseTimeCursor } from '../../core/http/request';
 import { createId } from '../../core/security/crypto';
 import { now } from '../../core/utils/text';
 import type { DrizzleDB } from '../../database/database';
-import { activity } from '../../database/schema';
+import { activity, tasks } from '../../database/schema';
 import type { AuthActor } from '../auth/auth.types';
 import type { AuthorizationService } from '../authorization/authorization.service';
+
+const PAGE_SIZE = 200;
 
 export class ActivityService {
   constructor(
@@ -35,6 +37,30 @@ export class ActivityService {
 
   async list(actor: AuthActor, projectId: string, rawCursor?: string) {
     await this.authorization.requireProject(actor, projectId);
+    return this.page(eq(activity.projectId, projectId), rawCursor);
+  }
+
+  /**
+   * A task's history: task changes and comments. With `includeSubtasks`, also the history of every
+   * subtask, including deleted ones.
+   */
+  async listForTask(
+    actor: AuthActor,
+    taskId: string,
+    options: { cursor?: string; includeSubtasks: boolean },
+  ) {
+    await this.authorization.requireTask(actor, taskId);
+    const subtaskIds = this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .where(eq(tasks.parentId, taskId));
+    const condition = options.includeSubtasks
+      ? or(eq(activity.taskId, taskId), inArray(activity.taskId, subtaskIds))!
+      : eq(activity.taskId, taskId);
+    return this.page(condition, options.cursor);
+  }
+
+  private async page(condition: SQL, rawCursor?: string) {
     const cursor = parseTimeCursor(rawCursor);
     const cursorCondition = cursor
       ? or(
@@ -43,12 +69,12 @@ export class ActivityService {
         )
       : undefined;
     const rows = await this.db.query.activity.findMany({
-      where: and(eq(activity.projectId, projectId), cursorCondition),
+      where: and(condition, cursorCondition),
       orderBy: [desc(activity.createdAt), desc(activity.id)],
-      limit: 201,
+      limit: PAGE_SIZE + 1,
     });
-    const hasMore = rows.length > 200;
-    const items = rows.slice(0, 200);
+    const hasMore = rows.length > PAGE_SIZE;
+    const items = rows.slice(0, PAGE_SIZE);
     return { items, cursor: hasMore ? makeTimeCursor(items.at(-1)) : null };
   }
 }

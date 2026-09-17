@@ -2,6 +2,9 @@ import type { RuntimeContext } from '../../core/runtime/runtime-context';
 import { renderEmail } from './email-template';
 import { SmtpTransport } from './smtp.transport';
 
+const NOTIFICATION_FOOTER =
+  'You received this because of activity on a Dayboard task. You can turn these emails off in your notification settings.';
+
 export class MailService {
   private readonly transport: SmtpTransport;
 
@@ -118,6 +121,57 @@ export class MailService {
       footer: 'You received this because you confirmed your Dayboard account.',
     });
     this.schedule(email);
+  }
+
+  sendTaskAssigned(input: {
+    to: string;
+    assigner: string;
+    taskTitle: string;
+    projectName: string;
+    dueDate: string | null;
+    orgId: string;
+  }): void {
+    const title = this.shortTitle(input.taskTitle);
+    const email = renderEmail(input.to, {
+      subject: `${input.assigner} assigned you "${title}"`,
+      preheader: `${input.assigner} assigned you a task in ${input.projectName}.`,
+      heading: `${input.assigner} assigned you a task`,
+      paragraphs: [
+        `"${input.taskTitle}" in ${input.projectName}.`,
+        ...(input.dueDate ? [`It is due on ${input.dueDate}.`] : []),
+      ],
+      ctaLabel: 'Open board',
+      ctaUrl: `${this.runtime.env.APP_URL}/orgs/${input.orgId}`,
+      footer: NOTIFICATION_FOOTER,
+    });
+    this.schedule(email);
+  }
+
+  sendTaskComment(input: {
+    to: string;
+    kind: 'mention' | 'comment';
+    author: string;
+    taskTitle: string;
+    projectName: string;
+    excerpt: string;
+    orgId: string;
+  }): void {
+    const title = this.shortTitle(input.taskTitle);
+    const action = input.kind === 'mention' ? 'mentioned you on' : 'commented on';
+    const email = renderEmail(input.to, {
+      subject: `${input.author} ${action} "${title}"`,
+      preheader: input.excerpt,
+      heading: `${input.author} ${action} a task`,
+      paragraphs: [`On "${input.taskTitle}" in ${input.projectName}:`, input.excerpt],
+      ctaLabel: 'Open board',
+      ctaUrl: `${this.runtime.env.APP_URL}/orgs/${input.orgId}`,
+      footer: NOTIFICATION_FOOTER,
+    });
+    this.schedule(email);
+  }
+
+  private shortTitle(title: string): string {
+    return title.length > 80 ? `${title.slice(0, 79)}…` : title;
   }
 
   private schedule(email: ReturnType<typeof renderEmail>): void {
