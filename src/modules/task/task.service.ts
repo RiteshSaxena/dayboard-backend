@@ -101,6 +101,18 @@ export class TaskService {
   ) {}
 
   /** Lists top-level tasks; subtasks are fetched through their parent. */
+  /** One task or subtask, archived or not, with its subtask counts. For the task page and shared links. */
+  async get(actor: AuthActor, id: string) {
+    const { task, project } = await this.authorization.requireTask(actor, id);
+    const subtasks = await this.db
+      .select({ parentId: tasks.parentId, status: tasks.status })
+      .from(tasks)
+      .where(and(eq(tasks.parentId, id), isNull(tasks.deletedAt)));
+    const [withCounts] = withSubtaskCounts([task], countSubtasks(subtasks));
+    // a link names only the task, so the app learns which org to open from here
+    return { ...withCounts!, orgId: project.orgId };
+  }
+
   async list(
     actor: AuthActor,
     projectId: string,

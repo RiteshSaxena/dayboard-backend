@@ -40,7 +40,7 @@ describe('assignment emails', () => {
           taskTitle: 'Write copy',
           projectName: 'Launch',
           dueDate: '2026-10-01',
-          orgId: org.orgId,
+          taskId: expect.any(String),
         }),
       },
     ]);

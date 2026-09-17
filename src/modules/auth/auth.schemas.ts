@@ -10,6 +10,8 @@ export const signupSchema = z
     email,
     password,
     turnstile,
+    /** The token from an invitation link. Signing up with the invited address verifies it. */
+    inviteToken: z.string().min(20).max(512).optional(),
   })
   .strict();
 

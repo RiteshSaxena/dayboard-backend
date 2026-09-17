@@ -229,11 +229,19 @@ export class OrgService {
     ) {
       throw new ApiError(410, 'expired', 'Invitation is invalid or expired');
     }
+    const account = await this.db.query.users.findFirst({
+      columns: { id: true },
+      where: and(eq(users.email, normalizeEmail(found.invite.email)), isNull(users.deletedAt)),
+    });
     return {
       org: { id: found.org.id, name: found.org.name },
       inviter: { id: found.inviter.id, name: found.inviter.name },
       role: found.invite.role,
       expiresAt: found.invite.expiresAt,
+      // lets the invite page prefill signup; the link holder received this address's email
+      email: found.invite.email,
+      // whether the page should offer sign-in or signup; only the invitation's holder learns it
+      accountExists: !!account,
     };
   }
 
@@ -248,6 +256,10 @@ export class OrgService {
       found.invite.expiresAt <= now()
     ) {
       throw new ApiError(410, 'expired', 'Invitation is invalid or expired');
+    }
+    // an invitation belongs to the address it was sent to, so a forwarded link can't be used by another account
+    if (normalizeEmail(found.invite.email) !== normalizeEmail(actor.user.email)) {
+      throw forbidden('This invitation was sent to a different email address');
     }
     const existingMembership = await this.findMembership(found.org.id, actor.user.id);
     if (existingMembership) throw conflict('You are already a member');

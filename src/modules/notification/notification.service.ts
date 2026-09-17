@@ -90,7 +90,7 @@ export class NotificationService {
         taskTitle: task.title,
         projectName: context.projectName,
         dueDate: task.dueDate,
-        orgId: context.orgId,
+        taskId: task.id,
       });
     });
   }
@@ -140,7 +140,7 @@ export class NotificationService {
           taskTitle: task.title,
           projectName: context.projectName,
           excerpt,
-          orgId: context.orgId,
+          taskId: task.id,
         });
       }
     });

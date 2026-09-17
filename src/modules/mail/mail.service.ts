@@ -129,7 +129,7 @@ export class MailService {
     taskTitle: string;
     projectName: string;
     dueDate: string | null;
-    orgId: string;
+    taskId: string;
   }): void {
     const title = this.shortTitle(input.taskTitle);
     const email = renderEmail(input.to, {
@@ -140,8 +140,8 @@ export class MailService {
         `"${input.taskTitle}" in ${input.projectName}.`,
         ...(input.dueDate ? [`It is due on ${input.dueDate}.`] : []),
       ],
-      ctaLabel: 'Open board',
-      ctaUrl: `${this.runtime.env.APP_URL}/orgs/${input.orgId}`,
+      ctaLabel: 'Open task',
+      ctaUrl: this.taskUrl(input.taskId),
       footer: NOTIFICATION_FOOTER,
     });
     this.schedule(email);
@@ -154,7 +154,7 @@ export class MailService {
     taskTitle: string;
     projectName: string;
     excerpt: string;
-    orgId: string;
+    taskId: string;
   }): void {
     const title = this.shortTitle(input.taskTitle);
     const action = input.kind === 'mention' ? 'mentioned you on' : 'commented on';
@@ -163,11 +163,16 @@ export class MailService {
       preheader: input.excerpt,
       heading: `${input.author} ${action} a task`,
       paragraphs: [`On "${input.taskTitle}" in ${input.projectName}:`, input.excerpt],
-      ctaLabel: 'Open board',
-      ctaUrl: `${this.runtime.env.APP_URL}/orgs/${input.orgId}`,
+      ctaLabel: 'Open task',
+      ctaUrl: this.taskUrl(input.taskId),
       footer: NOTIFICATION_FOOTER,
     });
     this.schedule(email);
+  }
+
+  /** The frontend's page for one task; it finds the task's org with GET /api/tasks/:id. */
+  private taskUrl(taskId: string): string {
+    return `${this.runtime.env.APP_URL}/tasks/${encodeURIComponent(taskId)}`;
   }
 
   private shortTitle(title: string): string {

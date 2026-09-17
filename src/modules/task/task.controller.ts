@@ -38,6 +38,14 @@ export class TaskController {
       return c.json({ data }, 201);
     });
 
+    app.get('/api/tasks/:id', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const data = await this.taskService.get(actor, taskId);
+
+      return c.json({ data });
+    });
+
     app.get('/api/tasks/:id/subtasks', async (c) => {
       const actor = requireActor(c);
       const taskId = parseId(c.req.param('id'));

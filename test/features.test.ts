@@ -315,6 +315,37 @@ describe('subtasks', () => {
     expect(await titles()).toEqual(['Open', 'Step']);
   });
 
+  it('gets one task with its subtask counts, including archived tasks', async ({ expect }) => {
+    const org = await seedOrg();
+    const other = await seedOrg();
+    const { owner, member, guest } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const parent = await createTask(member.api, project.id, { title: 'Parent', status: 'done' });
+    const child = (await member.api('POST', `/api/tasks/${parent.id}/subtasks`, { title: 'Child' }))
+      .body.data;
+    await member.api('POST', `/api/tasks/${child.id}/move`, { status: 'done' });
+    await member.api('POST', `/api/tasks/${parent.id}/archive`);
+
+    const fetched = await guest.api('GET', `/api/tasks/${parent.id}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.body.data).toMatchObject({
+      id: parent.id,
+      title: 'Parent',
+      subtaskCount: 1,
+      subtaskDoneCount: 1,
+      orgId: org.orgId,
+    });
+    expect(fetched.body.data.archivedAt).toEqual(expect.any(Number));
+    expect((await guest.api('GET', `/api/tasks/${child.id}`)).body.data).toMatchObject({
+      parentId: parent.id,
+      subtaskCount: 0,
+    });
+
+    expect((await other.users.owner.api('GET', `/api/tasks/${parent.id}`)).status).toBe(404);
+    await member.api('DELETE', `/api/tasks/${parent.id}`);
+    expect((await guest.api('GET', `/api/tasks/${parent.id}`)).status).toBe(404);
+  });
+
   it('archives, deletes, restores, and moves subtasks with their parent', async ({ expect }) => {
     const org = await seedOrg();
     const { owner, member } = org.users;

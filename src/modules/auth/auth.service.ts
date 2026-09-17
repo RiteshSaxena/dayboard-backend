@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne } from 'drizzle-orm';
+import { and, eq, gt, isNull, ne } from 'drizzle-orm';
 import type { RuntimeContext } from '../../core/runtime/runtime-context';
 import { ApiError, conflict, unauthenticated } from '../../core/http/api-error';
 import { createId, createToken, sha256 } from '../../core/security/crypto';
@@ -8,6 +8,7 @@ import type { DrizzleDB } from '../../database/database';
 import {
   activity,
   authTokens,
+  invites,
   memberships,
   orgs,
   projectStages,
@@ -41,13 +42,23 @@ export class AuthService {
     private readonly runtime: RuntimeContext,
   ) {}
 
-  async signup(input: { name: string; email: string; password: string; turnstile: string }) {
+  async signup(input: {
+    name: string;
+    email: string;
+    password: string;
+    turnstile: string;
+    inviteToken?: string;
+  }) {
     const email = normalizeEmail(input.email);
     const ip = this.rateLimit.requestIp();
     await this.rateLimit.check('auth', `signup:${ip}`);
     await this.turnstile.verify(input.turnstile, 'signup');
     const existingUser = await this.findUserByEmail(email);
     if (existingUser) throw conflict('An account with this email already exists', 'email');
+    // The invitation was emailed to this address, so signing up from its link proves the person owns it.
+    const verifiedByInvite = input.inviteToken
+      ? await this.isOpenInviteFor(input.inviteToken, email)
+      : false;
 
     const timestamp = now();
     const userId = createId();
@@ -61,7 +72,7 @@ export class AuthService {
     const user = {
       id: userId,
       email,
-      emailVerifiedAt: null,
+      emailVerifiedAt: verifiedByInvite ? timestamp : null,
       name: input.name.trim(),
       avatarUrl: null,
       passwordHash,
@@ -100,12 +111,9 @@ export class AuthService {
       createdAt: timestamp,
     };
 
-    await this.createSignup({ user, org, session, authToken });
-    this.mail.sendVerification({
-      name: user.name,
-      email,
-      token: rawVerifyToken,
-    });
+    await this.createSignup({ user, org, session, authToken: verifiedByInvite ? null : authToken });
+    if (verifiedByInvite) this.mail.sendWelcome({ email, name: user.name });
+    else this.mail.sendVerification({ name: user.name, email, token: rawVerifyToken });
     return {
       user: userDto(user),
       token: rawSessionToken,
@@ -295,6 +303,22 @@ export class AuthService {
     });
   }
 
+  /**
+   * Whether the token belongs to an invitation that is still open and was sent to this address. A
+   * wrong or stale token just means an ordinary signup, so nothing about the invitation is revealed.
+   */
+  private async isOpenInviteFor(rawToken: string, email: string): Promise<boolean> {
+    const invite = await this.db.query.invites.findFirst({
+      where: and(
+        eq(invites.tokenHash, await sha256(rawToken)),
+        isNull(invites.acceptedAt),
+        isNull(invites.revokedAt),
+        gt(invites.expiresAt, now()),
+      ),
+    });
+    return !!invite && normalizeEmail(invite.email) === email;
+  }
+
   private async findUserByEmail(email: string): Promise<User | null> {
     const user = await this.db.query.users.findFirst({
       where: and(eq(users.email, email), isNull(users.deletedAt)),
@@ -313,7 +337,8 @@ export class AuthService {
     user: User;
     org: Org;
     session: Session;
-    authToken: typeof authTokens.$inferInsert;
+    /** The verification token; null when the account starts verified. */
+    authToken: typeof authTokens.$inferInsert | null;
   }): Promise<void> {
     const timestamp = records.org.createdAt;
     const project = buildDefaultProject(records.org.id, records.user.id, timestamp);
@@ -327,7 +352,7 @@ export class AuthService {
         joinedAt: records.user.createdAt,
       }),
       this.db.insert(sessions).values(records.session),
-      this.db.insert(authTokens).values(records.authToken),
+      ...(records.authToken ? [this.db.insert(authTokens).values(records.authToken)] : []),
       this.db.insert(taskTypes).values(buildStarterTaskTypes(records.org.id, timestamp)),
       this.db.insert(projects).values(project),
       this.db.insert(projectStages).values(buildStarterStages(project.id, timestamp)),
