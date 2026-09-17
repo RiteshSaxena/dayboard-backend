@@ -54,7 +54,8 @@ export class OrgService {
 
   async update(actor: AuthActor, orgId: string, name: string) {
     await this.authorization.requireOrg(actor, orgId, 'admin');
-    return this.updateOrg(orgId, { name, updatedAt: now() });
+    const timestamp = now();
+    return this.updateOrg(orgId, { name, updatedAt: timestamp });
   }
 
   async remove(actor: AuthActor, orgId: string): Promise<void> {
@@ -63,7 +64,8 @@ export class OrgService {
     const org = await this.findOrg(orgId);
     if (!org) throw notFound('Organization');
     if (org.personal) throw conflict('A personal organization cannot be deleted');
-    await this.updateOrg(orgId, { deletedAt: now(), updatedAt: now() });
+    const timestamp = now();
+    await this.updateOrg(orgId, { deletedAt: timestamp, updatedAt: timestamp });
   }
 
   async members(actor: AuthActor, orgId: string) {
@@ -99,7 +101,8 @@ export class OrgService {
       if (actorMembership.role !== 'owner' && actorMembership.role !== 'admin') throw forbidden();
       if (!this.authorization.canManageRole(actorMembership.role, target.role)) throw forbidden();
     }
-    if (target.role === 'owner' && (await this.countOwners(orgId)) <= 1) {
+    const ownerCount = await this.countOwners(orgId);
+    if (target.role === 'owner' && ownerCount <= 1) {
       throw conflict('The last owner cannot leave or be removed');
     }
     await this.removeMembership(orgId, userId);
@@ -141,21 +144,24 @@ export class OrgService {
     const org = await this.findOrg(orgId);
     if (!org || org.personal) throw conflict('Personal organizations cannot have members');
     const email = normalizeEmail(emailInput);
-    if (await this.hasMemberWithEmail(orgId, email))
-      throw conflict('This person is already a member', 'email');
-    if (await this.findPendingInviteForEmail(orgId, email))
-      throw conflict('A pending invitation already exists', 'email');
-    if ((await this.countMembers(orgId)) >= 100)
-      throw conflict('This organization has reached its member limit');
+    const existingMember = await this.hasMemberWithEmail(orgId, email);
+    if (existingMember) throw conflict('This person is already a member', 'email');
+
+    const pendingInvite = await this.findPendingInviteForEmail(orgId, email);
+    if (pendingInvite) throw conflict('A pending invitation already exists', 'email');
+
+    const memberCount = await this.countMembers(orgId);
+    if (memberCount >= 100) throw conflict('This organization has reached its member limit');
 
     const rawToken = createToken();
     const timestamp = now();
+    const tokenHash = await sha256(rawToken);
     const invite = {
       id: createId(),
       orgId,
       email,
       role,
-      tokenHash: await sha256(rawToken),
+      tokenHash,
       invitedBy: actor.user.id,
       expiresAt: timestamp + 7 * DAY,
       acceptedAt: null,
@@ -189,7 +195,8 @@ export class OrgService {
     if (!invite || !org) throw notFound('Invitation');
     const token = createToken();
     const timestamp = now();
-    await this.replaceInviteToken(invite.id, await sha256(token), timestamp + 7 * DAY, timestamp);
+    const tokenHash = await sha256(token);
+    await this.replaceInviteToken(invite.id, tokenHash, timestamp + 7 * DAY, timestamp);
     this.mail.sendInvite({
       email: invite.email,
       inviter: actor.user.name,
@@ -202,12 +209,16 @@ export class OrgService {
 
   async revokeInvite(actor: AuthActor, orgId: string, inviteId: string): Promise<void> {
     await this.authorization.requireOrg(actor, orgId, 'admin');
-    if (!(await this.findInvite(orgId, inviteId))) throw notFound('Invitation');
-    await this.setInviteRevoked(orgId, inviteId, now());
+    const invite = await this.findInvite(orgId, inviteId);
+    if (!invite) throw notFound('Invitation');
+
+    const timestamp = now();
+    await this.setInviteRevoked(orgId, inviteId, timestamp);
   }
 
   async invitePreview(rawToken: string) {
-    const found = await this.findInviteByTokenHash(await sha256(rawToken));
+    const tokenHash = await sha256(rawToken);
+    const found = await this.findInviteByTokenHash(tokenHash);
     if (
       !found ||
       found.invite.acceptedAt ||
@@ -226,7 +237,8 @@ export class OrgService {
 
   async acceptInvite(actor: AuthActor, rawToken: string): Promise<void> {
     this.authorization.requireVerified(actor);
-    const found = await this.findInviteByTokenHash(await sha256(rawToken));
+    const tokenHash = await sha256(rawToken);
+    const found = await this.findInviteByTokenHash(tokenHash);
     if (
       !found ||
       found.invite.acceptedAt ||
@@ -235,12 +247,15 @@ export class OrgService {
     ) {
       throw new ApiError(410, 'expired', 'Invitation is invalid or expired');
     }
-    if (await this.findMembership(found.org.id, actor.user.id))
-      throw conflict('You are already a member');
-    if ((await this.countMembers(found.org.id)) >= 100)
-      throw conflict('This organization has reached its member limit');
+    const existingMembership = await this.findMembership(found.org.id, actor.user.id);
+    if (existingMembership) throw conflict('You are already a member');
+
+    const memberCount = await this.countMembers(found.org.id);
+    if (memberCount >= 100) throw conflict('This organization has reached its member limit');
+
     const acceptedAt = now();
-    if (!(await this.consumeInvite(found.invite, actor.user.id, acceptedAt))) {
+    const accepted = await this.consumeInvite(found.invite, actor.user.id, acceptedAt);
+    if (!accepted) {
       throw new ApiError(410, 'expired', 'Invitation is invalid or expired');
     }
     await this.activity.record({
@@ -274,11 +289,10 @@ export class OrgService {
   }
 
   private async findOrg(id: string): Promise<Org | null> {
-    return (
-      (await this.db.query.orgs.findFirst({
-        where: and(eq(orgs.id, id), isNull(orgs.deletedAt)),
-      })) ?? null
-    );
+    const org = await this.db.query.orgs.findFirst({
+      where: and(eq(orgs.id, id), isNull(orgs.deletedAt)),
+    });
+    return org ?? null;
   }
 
   private async updateOrg(
@@ -308,11 +322,10 @@ export class OrgService {
   }
 
   private async findMembership(orgId: string, userId: string): Promise<Membership | null> {
-    return (
-      (await this.db.query.memberships.findFirst({
-        where: and(eq(memberships.orgId, orgId), eq(memberships.userId, userId)),
-      })) ?? null
-    );
+    const membership = await this.db.query.memberships.findFirst({
+      where: and(eq(memberships.orgId, orgId), eq(memberships.userId, userId)),
+    });
+    return membership ?? null;
   }
 
   private async updateMembership(
@@ -378,16 +391,15 @@ export class OrgService {
   }
 
   private async findPendingInviteForEmail(orgId: string, email: string): Promise<Invite | null> {
-    return (
-      (await this.db.query.invites.findFirst({
-        where: and(
-          eq(invites.orgId, orgId),
-          eq(invites.email, email),
-          isNull(invites.acceptedAt),
-          isNull(invites.revokedAt),
-        ),
-      })) ?? null
-    );
+    const invite = await this.db.query.invites.findFirst({
+      where: and(
+        eq(invites.orgId, orgId),
+        eq(invites.email, email),
+        isNull(invites.acceptedAt),
+        isNull(invites.revokedAt),
+      ),
+    });
+    return invite ?? null;
   }
 
   private async createInvite(invite: Invite): Promise<void> {
@@ -395,16 +407,15 @@ export class OrgService {
   }
 
   private async findInvite(orgId: string, id: string): Promise<Invite | null> {
-    return (
-      (await this.db.query.invites.findFirst({
-        where: and(
-          eq(invites.id, id),
-          eq(invites.orgId, orgId),
-          isNull(invites.acceptedAt),
-          isNull(invites.revokedAt),
-        ),
-      })) ?? null
-    );
+    const invite = await this.db.query.invites.findFirst({
+      where: and(
+        eq(invites.id, id),
+        eq(invites.orgId, orgId),
+        isNull(invites.acceptedAt),
+        isNull(invites.revokedAt),
+      ),
+    });
+    return invite ?? null;
   }
 
   private async replaceInviteToken(

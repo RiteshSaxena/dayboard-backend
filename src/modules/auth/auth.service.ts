@@ -36,10 +36,11 @@ export class AuthService {
 
   async signup(input: { name: string; email: string; password: string; turnstile: string }) {
     const email = normalizeEmail(input.email);
-    await this.rateLimit.check('auth', `signup:${this.rateLimit.requestIp()}`);
+    const ip = this.rateLimit.requestIp();
+    await this.rateLimit.check('auth', `signup:${ip}`);
     await this.turnstile.verify(input.turnstile, 'signup');
-    if (await this.findUserByEmail(email))
-      throw conflict('An account with this email already exists', 'email');
+    const existingUser = await this.findUserByEmail(email);
+    if (existingUser) throw conflict('An account with this email already exists', 'email');
 
     const timestamp = now();
     const userId = createId();
@@ -47,13 +48,16 @@ export class AuthService {
     const sessionId = createId();
     const rawSessionToken = createToken();
     const rawVerifyToken = createToken();
+    const passwordHash = await this.passwordService.hash(input.password);
+    const sessionTokenHash = await sha256(rawSessionToken);
+    const verifyTokenHash = await sha256(rawVerifyToken);
     const user = {
       id: userId,
       email,
       emailVerifiedAt: null,
       name: input.name.trim(),
       avatarUrl: null,
-      passwordHash: await this.passwordService.hash(input.password),
+      passwordHash,
       googleSub: null,
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -72,7 +76,7 @@ export class AuthService {
     const session = {
       id: sessionId,
       userId,
-      tokenHash: await sha256(rawSessionToken),
+      tokenHash: sessionTokenHash,
       userAgent: this.runtime.request.headers.get('user-agent'),
       ip: this.runtime.request.headers.get('cf-connecting-ip'),
       createdAt: timestamp,
@@ -83,7 +87,7 @@ export class AuthService {
       id: createId(),
       userId,
       kind: 'verify',
-      tokenHash: await sha256(rawVerifyToken),
+      tokenHash: verifyTokenHash,
       expiresAt: timestamp + DAY,
       usedAt: null,
       createdAt: timestamp,
@@ -105,22 +109,28 @@ export class AuthService {
 
   async signin(input: { email: string; password: string }) {
     const email = normalizeEmail(input.email);
+    const ip = this.rateLimit.requestIp();
     await Promise.all([
-      this.rateLimit.check('auth', `signin-ip:${this.rateLimit.requestIp()}`),
+      this.rateLimit.check('auth', `signin-ip:${ip}`),
       this.rateLimit.check('auth', `signin-email:${email}`),
     ]);
     const user = await this.findUserByEmail(email);
-    const valid = user?.passwordHash
-      ? await this.passwordService.verify(input.password, user.passwordHash)
-      : false;
-    if (!user || !valid) throw new ApiError(401, 'unauthenticated', 'Invalid email or password');
+    if (!user?.passwordHash) {
+      throw new ApiError(401, 'unauthenticated', 'Invalid email or password');
+    }
+
+    const passwordIsValid = await this.passwordService.verify(input.password, user.passwordHash);
+    if (!passwordIsValid) {
+      throw new ApiError(401, 'unauthenticated', 'Invalid email or password');
+    }
 
     const timestamp = now();
     const token = createToken();
+    const tokenHash = await sha256(token);
     const session = {
       id: createId(),
       userId: user.id,
-      tokenHash: await sha256(token),
+      tokenHash,
       userAgent: this.runtime.request.headers.get('user-agent'),
       ip: this.runtime.request.headers.get('cf-connecting-ip'),
       createdAt: timestamp,
@@ -134,7 +144,8 @@ export class AuthService {
   async authenticate(authorization: string | undefined): Promise<AuthActor | null> {
     const match = authorization?.match(/^Bearer ([A-Za-z0-9_-]{20,})$/);
     if (!match?.[1]) return null;
-    const found = await this.findActorByTokenHash(await sha256(match[1]));
+    const tokenHash = await sha256(match[1]);
+    const found = await this.findActorByTokenHash(tokenHash);
     if (!found) return null;
     const timestamp = now();
     if (found.session.expiresAt <= timestamp) {
@@ -162,11 +173,12 @@ export class AuthService {
     await this.rateLimit.check('email', `verify:${actor.user.id}`);
     const token = createToken();
     const timestamp = now();
+    const tokenHash = await sha256(token);
     await this.createAuthToken({
       id: createId(),
       userId: actor.user.id,
       kind: 'verify',
-      tokenHash: await sha256(token),
+      tokenHash,
       expiresAt: timestamp + DAY,
       usedAt: null,
       createdAt: timestamp,
@@ -179,12 +191,15 @@ export class AuthService {
   }
 
   async verifyEmail(rawToken: string): Promise<void> {
-    const found = await this.findAuthToken(await sha256(rawToken), 'verify');
+    const tokenHash = await sha256(rawToken);
+    const found = await this.findAuthToken(tokenHash, 'verify');
     if (!found) throw new ApiError(410, 'expired', 'Verification link is invalid or expired');
     if (found.token.usedAt || found.token.expiresAt <= now())
       throw new ApiError(410, 'expired', 'Verification link is invalid or expired');
     const firstVerification = !found.user.emailVerifiedAt;
-    if (!(await this.consumeVerifyToken(found.user.id, found.token.id, now()))) {
+    const timestamp = now();
+    const tokenConsumed = await this.consumeVerifyToken(found.user.id, found.token.id, timestamp);
+    if (!tokenConsumed) {
       throw new ApiError(410, 'expired', 'Verification link is invalid or expired');
     }
     if (firstVerification)
@@ -199,11 +214,12 @@ export class AuthService {
     if (!user?.passwordHash) return;
     const token = createToken();
     const timestamp = now();
+    const tokenHash = await sha256(token);
     await this.createAuthToken({
       id: createId(),
       userId: user.id,
       kind: 'reset',
-      tokenHash: await sha256(token),
+      tokenHash,
       expiresAt: timestamp + 3_600_000,
       usedAt: null,
       createdAt: timestamp,
@@ -212,19 +228,20 @@ export class AuthService {
   }
 
   async resetPassword(rawToken: string, password: string): Promise<void> {
-    const found = await this.findAuthToken(await sha256(rawToken), 'reset');
+    const tokenHash = await sha256(rawToken);
+    const found = await this.findAuthToken(tokenHash, 'reset');
     if (!found || found.token.usedAt || found.token.expiresAt <= now()) {
       throw new ApiError(410, 'expired', 'Reset link is invalid or expired');
     }
     const timestamp = now();
-    if (
-      !(await this.consumeResetToken(
-        found.user.id,
-        found.token.id,
-        await this.passwordService.hash(password),
-        timestamp,
-      ))
-    ) {
+    const passwordHash = await this.passwordService.hash(password);
+    const tokenConsumed = await this.consumeResetToken(
+      found.user.id,
+      found.token.id,
+      passwordHash,
+      timestamp,
+    );
+    if (!tokenConsumed) {
       throw new ApiError(410, 'expired', 'Reset link is invalid or expired');
     }
     this.sendPasswordChanged(found.user.email, timestamp);
@@ -240,23 +257,24 @@ export class AuthService {
   }
 
   async updateMe(actor: AuthActor, patch: { name?: string; avatarUrl?: string | null }) {
-    return userDto(await this.updateProfile(actor.user.id, patch, now()));
+    const timestamp = now();
+    const user = await this.updateProfile(actor.user.id, patch, timestamp);
+    return userDto(user);
   }
 
   async changePassword(actor: AuthActor, current: string, next: string): Promise<void> {
-    if (
-      !actor.user.passwordHash ||
-      !(await this.passwordService.verify(current, actor.user.passwordHash))
-    ) {
+    if (!actor.user.passwordHash) throw unauthenticated();
+
+    const currentPasswordIsValid = await this.passwordService.verify(
+      current,
+      actor.user.passwordHash,
+    );
+    if (!currentPasswordIsValid) {
       throw unauthenticated();
     }
     const timestamp = now();
-    await this.persistPasswordChange(
-      actor.user.id,
-      actor.session.id,
-      await this.passwordService.hash(next),
-      timestamp,
-    );
+    const passwordHash = await this.passwordService.hash(next);
+    await this.persistPasswordChange(actor.user.id, actor.session.id, passwordHash, timestamp);
     this.sendPasswordChanged(actor.user.email, timestamp);
   }
 
@@ -271,19 +289,17 @@ export class AuthService {
   }
 
   private async findUserByEmail(email: string): Promise<User | null> {
-    return (
-      (await this.db.query.users.findFirst({
-        where: and(eq(users.email, email), isNull(users.deletedAt)),
-      })) ?? null
-    );
+    const user = await this.db.query.users.findFirst({
+      where: and(eq(users.email, email), isNull(users.deletedAt)),
+    });
+    return user ?? null;
   }
 
   private async findUserById(id: string): Promise<User | null> {
-    return (
-      (await this.db.query.users.findFirst({
-        where: and(eq(users.id, id), isNull(users.deletedAt)),
-      })) ?? null
-    );
+    const user = await this.db.query.users.findFirst({
+      where: and(eq(users.id, id), isNull(users.deletedAt)),
+    });
+    return user ?? null;
   }
 
   private async createSignup(records: {

@@ -10,18 +10,31 @@ export class PurgeService {
 
   async run(timestamp = Date.now()): Promise<Record<string, number>> {
     const cutoff = timestamp - RETENTION;
+
+    const purgedTasks = await this.purgeSoftDeleted(tasks, tasks.id, tasks.deletedAt, cutoff);
+    const purgedNotes = await this.purgeSoftDeleted(notes, notes.id, notes.deletedAt, cutoff);
+    const purgedProjects = await this.purgeSoftDeleted(
+      projects,
+      projects.id,
+      projects.deletedAt,
+      cutoff,
+    );
+    const purgedOrgs = await this.purgeSoftDeleted(orgs, orgs.id, orgs.deletedAt, cutoff);
+    const expiredSession = lt(sessions.expiresAt, timestamp);
+    const purgedSessions = await this.purgeWhere(sessions, sessions.id, expiredSession);
+    const expiredAuthToken = or(isNotNull(authTokens.usedAt), lt(authTokens.expiresAt, timestamp))!;
+    const purgedAuthTokens = await this.purgeWhere(authTokens, authTokens.id, expiredAuthToken);
+    const oldInvite = lt(invites.createdAt, cutoff);
+    const purgedInvites = await this.purgeWhere(invites, invites.id, oldInvite);
+
     return {
-      tasks: await this.purgeSoftDeleted(tasks, tasks.id, tasks.deletedAt, cutoff),
-      notes: await this.purgeSoftDeleted(notes, notes.id, notes.deletedAt, cutoff),
-      projects: await this.purgeSoftDeleted(projects, projects.id, projects.deletedAt, cutoff),
-      orgs: await this.purgeSoftDeleted(orgs, orgs.id, orgs.deletedAt, cutoff),
-      sessions: await this.purgeWhere(sessions, sessions.id, lt(sessions.expiresAt, timestamp)),
-      authTokens: await this.purgeWhere(
-        authTokens,
-        authTokens.id,
-        or(isNotNull(authTokens.usedAt), lt(authTokens.expiresAt, timestamp))!,
-      ),
-      invites: await this.purgeWhere(invites, invites.id, lt(invites.createdAt, cutoff)),
+      tasks: purgedTasks,
+      notes: purgedNotes,
+      projects: purgedProjects,
+      orgs: purgedOrgs,
+      sessions: purgedSessions,
+      authTokens: purgedAuthTokens,
+      invites: purgedInvites,
     };
   }
 

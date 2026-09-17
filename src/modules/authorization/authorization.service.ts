@@ -67,10 +67,8 @@ export class AuthorizationService {
       .where(and(eq(tasks.id, taskId), isNull(tasks.deletedAt), isNull(projects.deletedAt)))
       .limit(1);
     if (!row[0]) throw notFound('Task');
-    return {
-      ...row[0],
-      membership: await this.requireOrg(actor, row[0].project.orgId, minimum),
-    };
+    const membership = await this.requireOrg(actor, row[0].project.orgId, minimum);
+    return { ...row[0], membership };
   }
 
   async requireNote(
@@ -85,10 +83,8 @@ export class AuthorizationService {
       .where(and(eq(notes.id, noteId), isNull(notes.deletedAt), isNull(projects.deletedAt)))
       .limit(1);
     if (!row[0]) throw notFound('Note');
-    return {
-      ...row[0],
-      membership: await this.requireOrg(actor, row[0].project.orgId, minimum),
-    };
+    const membership = await this.requireOrg(actor, row[0].project.orgId, minimum);
+    return { ...row[0], membership };
   }
 
   canManageRole(actorRole: Role, targetRole: Role): boolean {

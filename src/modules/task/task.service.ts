@@ -148,9 +148,10 @@ export class TaskService {
   async archive(actor: AuthActor, id: string) {
     const current = await this.authorization.requireTask(actor, id, 'member');
     if (current.task.status !== 'done') throw conflict('Only completed tasks can be archived');
+    const timestamp = now();
     const task = await this.updateTask(id, {
-      archivedAt: now(),
-      updatedAt: now(),
+      archivedAt: timestamp,
+      updatedAt: timestamp,
     });
     if (!task) throw notFound('Task');
     await this.activity.record({
@@ -205,9 +206,10 @@ export class TaskService {
     if (!row || row.project.deletedAt) throw notFound('Task');
     await this.authorization.requireOrg(actor, row.project.orgId, 'member');
     if (!row.task.deletedAt) throw conflict('Task is not deleted');
+    const timestamp = now();
     const task = await this.updateTask(id, {
       deletedAt: null,
-      updatedAt: now(),
+      updatedAt: timestamp,
     });
     if (!task) throw notFound('Task');
     await this.activity.record({
@@ -289,6 +291,7 @@ export class TaskService {
 
   private async updateTask(id: string, patch: Partial<Task>): Promise<Task | null> {
     await this.db.update(tasks).set(patch).where(eq(tasks.id, id));
-    return (await this.db.query.tasks.findFirst({ where: eq(tasks.id, id) })) ?? null;
+    const task = await this.db.query.tasks.findFirst({ where: eq(tasks.id, id) });
+    return task ?? null;
   }
 }

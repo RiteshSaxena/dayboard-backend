@@ -124,9 +124,10 @@ export class NoteService {
     if (!row || row.project.deletedAt) throw notFound('Note');
     await this.authorization.requireOrg(actor, row.project.orgId, 'member');
     if (!row.note.deletedAt) throw conflict('Note is not deleted');
+    const timestamp = now();
     const note = await this.updateNote(id, {
       deletedAt: null,
-      updatedAt: now(),
+      updatedAt: timestamp,
     });
     if (!note) throw notFound('Note');
     await this.activity.record({
@@ -151,6 +152,7 @@ export class NoteService {
 
   private async updateNote(id: string, patch: Partial<Note>): Promise<Note | null> {
     await this.db.update(notes).set(patch).where(eq(notes.id, id));
-    return (await this.db.query.notes.findFirst({ where: eq(notes.id, id) })) ?? null;
+    const note = await this.db.query.notes.findFirst({ where: eq(notes.id, id) });
+    return note ?? null;
   }
 }

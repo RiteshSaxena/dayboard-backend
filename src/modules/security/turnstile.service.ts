@@ -11,11 +11,10 @@ export class TurnstileService {
   constructor(private readonly runtime: RuntimeContext) {}
 
   async verify(token: string, expectedAction: string): Promise<void> {
-    const hostnames = new Set(
-      this.runtime.env.TURNSTILE_HOSTNAMES.split(',')
-        .map((value) => value.trim())
-        .filter(Boolean),
-    );
+    const configuredHostnames = this.runtime.env.TURNSTILE_HOSTNAMES.split(',')
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const hostnames = new Set(configuredHostnames);
     if (!token || token.length > 2048 || hostnames.size === 0)
       throw forbidden('Bot verification failed');
 

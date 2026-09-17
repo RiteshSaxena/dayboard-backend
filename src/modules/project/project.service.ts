@@ -27,8 +27,10 @@ export class ProjectService {
 
   async create(actor: AuthActor, orgId: string, input: { name: string; color: string }) {
     await this.authorization.requireOrg(actor, orgId, 'admin');
-    if ((await this.countProjects(orgId)) >= 200)
+    const projectCount = await this.countProjects(orgId);
+    if (projectCount >= 200) {
       throw new ApiError(409, 'conflict', 'This organization has reached its project limit');
+    }
     const timestamp = now();
     const project = {
       id: createId(),
@@ -104,9 +106,10 @@ export class ProjectService {
     if (!project) throw notFound('Project');
     if (!project.deletedAt) throw conflict('Project is not deleted');
     await this.authorization.requireOrg(actor, project.orgId, 'admin');
+    const timestamp = now();
     const restored = await this.updateProject(id, {
       deletedAt: null,
-      updatedAt: now(),
+      updatedAt: timestamp,
     });
     if (!restored) throw notFound('Project');
     await this.activity.record({
@@ -163,11 +166,10 @@ export class ProjectService {
   }
 
   private async findProject(id: string): Promise<Project | null> {
-    return (
-      (await this.db.query.projects.findFirst({
-        where: eq(projects.id, id),
-      })) ?? null
-    );
+    const project = await this.db.query.projects.findFirst({
+      where: eq(projects.id, id),
+    });
+    return project ?? null;
   }
 
   private async updateProject(id: string, patch: Partial<Project>): Promise<Project | null> {
