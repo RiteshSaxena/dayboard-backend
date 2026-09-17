@@ -115,6 +115,23 @@ describe('Dayboard Worker', () => {
     }>();
     expect(me.data.user.email).toBe('new-user@dayboard.space');
     expect(me.data.orgs).toHaveLength(1);
+
+    const typesResponse = await request(`/api/orgs/${signup.data.personalOrgId}/task-types`, {
+      headers: { Authorization: `Bearer ${signup.data.token}` },
+    });
+    const types = await typesResponse.json<{ data: { name: string }[] }>();
+    expect(types.data.map((type) => type.name)).toEqual(['Task', 'Bug', 'Feature', 'Story']);
+
+    const boardResponse = await request(`/api/orgs/${signup.data.personalOrgId}/board`, {
+      headers: { Authorization: `Bearer ${signup.data.token}` },
+    });
+    const board = await boardResponse.json<{
+      data: { projects: { id: string; name: string }[]; stages: { projectId: string }[] };
+    }>();
+    expect(board.data.projects.map((project) => project.name)).toEqual(['Default']);
+    expect(
+      board.data.stages.filter((stage) => stage.projectId === board.data.projects[0]?.id),
+    ).toHaveLength(3);
   });
 
   it('creates and reads board data through the modular API', async ({ expect }) => {

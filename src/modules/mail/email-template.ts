@@ -1,5 +1,9 @@
 import type { EmailContent, OutgoingEmail } from './mail.types';
 
+// SVG logo. Gmail, Outlook, and Yahoo do not display SVG images in email and show the alt text
+// instead; a PNG is available at logo-mark%402x.png in the same bucket.
+const LOGO_URL = 'https://dayboard-cdn.s3.ap-south-1.amazonaws.com/logo-mark.svg';
+
 const escapeHtml = (value: string): string =>
   value
     .replaceAll('&', '&amp;')
@@ -30,7 +34,7 @@ export function renderEmail(to: string, content: EmailContent): OutgoingEmail {
       <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="width:520px;max-width:100%;border-collapse:collapse;">
         <tr><td style="padding:0 4px 20px;">
           <a href="https://dayboard.space" style="color:#24231f;text-decoration:none;font-family:Georgia,serif;font-size:24px;line-height:40px;">
-            <img src="https://dayboard.space/brand/logo-mark@2x.png" width="40" height="40" alt="Dayboard" style="display:inline-block;vertical-align:middle;margin-right:12px;border:0;border-radius:10px;">Dayboard
+            <img src="${LOGO_URL}" width="40" height="40" alt="Dayboard" style="display:inline-block;vertical-align:middle;margin-right:12px;border:0;border-radius:10px;">Dayboard
           </a>
         </td></tr>
         <tr><td style="background:#fff;border:1px solid #e5e2da;border-radius:16px;padding:36px 40px;">

@@ -6,10 +6,14 @@ import type { PasswordService } from '../../core/security/password';
 import { normalizeEmail, now, slugify } from '../../core/utils/text';
 import type { DrizzleDB } from '../../database/database';
 import {
+  activity,
   authTokens,
   memberships,
   orgs,
+  projectStages,
+  projects,
   sessions,
+  taskTypes,
   users,
   type Org,
   type Session,
@@ -18,6 +22,9 @@ import {
 import type { AuthActor } from './auth.types';
 import { userDto } from './auth.types';
 import type { MailService } from '../mail/mail.service';
+import { buildDefaultProject } from '../project/project.service';
+import { buildStarterStages } from '../stage/stage.service';
+import { buildStarterTaskTypes } from '../task-type/task-type.service';
 import type { RateLimitService } from '../security/rate-limit.service';
 import type { TurnstileService } from '../security/turnstile.service';
 
@@ -308,6 +315,8 @@ export class AuthService {
     session: Session;
     authToken: typeof authTokens.$inferInsert;
   }): Promise<void> {
+    const timestamp = records.org.createdAt;
+    const project = buildDefaultProject(records.org.id, records.user.id, timestamp);
     await this.db.batch([
       this.db.insert(users).values(records.user),
       this.db.insert(orgs).values(records.org),
@@ -319,6 +328,18 @@ export class AuthService {
       }),
       this.db.insert(sessions).values(records.session),
       this.db.insert(authTokens).values(records.authToken),
+      this.db.insert(taskTypes).values(buildStarterTaskTypes(records.org.id, timestamp)),
+      this.db.insert(projects).values(project),
+      this.db.insert(projectStages).values(buildStarterStages(project.id, timestamp)),
+      this.db.insert(activity).values({
+        id: createId(),
+        orgId: records.org.id,
+        projectId: project.id,
+        actorId: records.user.id,
+        kind: 'project.created',
+        payload: project,
+        createdAt: timestamp,
+      }),
     ]);
   }
 

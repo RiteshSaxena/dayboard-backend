@@ -12,6 +12,8 @@ import { ActivityService } from './modules/activity/activity.service';
 import { AuthController } from './modules/auth/auth.controller';
 import { AuthService } from './modules/auth/auth.service';
 import { AuthorizationService } from './modules/authorization/authorization.service';
+import { CommentController } from './modules/comment/comment.controller';
+import { CommentService } from './modules/comment/comment.service';
 import { MailService } from './modules/mail/mail.service';
 import { NoteController } from './modules/note/note.controller';
 import { NoteService } from './modules/note/note.service';
@@ -21,6 +23,10 @@ import { ProjectController } from './modules/project/project.controller';
 import { ProjectService } from './modules/project/project.service';
 import { RateLimitService } from './modules/security/rate-limit.service';
 import { TurnstileService } from './modules/security/turnstile.service';
+import { StageController } from './modules/stage/stage.controller';
+import { StageService } from './modules/stage/stage.service';
+import { TaskTypeController } from './modules/task-type/task-type.controller';
+import { TaskTypeService } from './modules/task-type/task-type.service';
 import { TaskController } from './modules/task/task.controller';
 import { TaskService } from './modules/task/task.service';
 
@@ -55,15 +61,32 @@ export class AppModule {
       mailService,
       activityService,
     );
-    const projectService = new ProjectService(db, authorizationService, activityService);
-    const taskService = new TaskService(db, authorizationService, activityService);
+    const stageService = new StageService(db, authorizationService, activityService);
+    const taskTypeService = new TaskTypeService(db, authorizationService, activityService);
+    const projectService = new ProjectService(
+      db,
+      authorizationService,
+      activityService,
+      taskTypeService,
+    );
+    const taskService = new TaskService(
+      db,
+      authorizationService,
+      activityService,
+      stageService,
+      taskTypeService,
+    );
     const noteService = new NoteService(db, authorizationService, activityService);
+    const commentService = new CommentService(db, authorizationService, activityService);
 
     this.configureMiddleware(authService);
     new AuthController(authService).mount(this.app);
     new OrgController(orgService).mount(this.app);
     new ProjectController(projectService).mount(this.app);
+    new StageController(stageService).mount(this.app);
+    new TaskTypeController(taskTypeService).mount(this.app);
     new TaskController(taskService).mount(this.app);
+    new CommentController(commentService).mount(this.app);
     new NoteController(noteService).mount(this.app);
     new ActivityController(activityService).mount(this.app);
     this.configureFallbacks();

@@ -1,0 +1,449 @@
+import { env } from 'cloudflare:workers';
+import { describe, it } from 'vitest';
+import { createDatabase } from '../src/database/database';
+import { PurgeService } from '../src/modules/maintenance/purge.service';
+import { seedOrg, type Api, type SeededOrg } from './helpers';
+
+const DAY = 86_400_000;
+
+async function createProject(api: Api, orgId: string, name = 'Website') {
+  const response = await api('POST', `/api/orgs/${orgId}/projects`, { name, color: 'moss' });
+  if (response.status !== 201) throw new Error(`project create failed: ${response.status}`);
+  return response.body.data as { id: string; stages: { id: string; name: string }[] };
+}
+
+async function createTask(api: Api, projectId: string, body: Record<string, unknown> = {}) {
+  const response = await api('POST', `/api/projects/${projectId}/tasks`, {
+    title: 'Task',
+    ...body,
+  });
+  if (response.status !== 201) {
+    throw new Error(`task create failed: ${response.status} ${JSON.stringify(response.body)}`);
+  }
+  return response.body.data;
+}
+
+describe('custom stages', () => {
+  let org: SeededOrg;
+
+  it('creates default stages and maps legacy status onto them', async ({ expect }) => {
+    org = await seedOrg();
+    const { owner } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    expect(project.stages.map((stage) => stage.name)).toEqual(['To do', 'In progress', 'Done']);
+
+    const defaultTask = await createTask(owner.api, project.id);
+    expect(defaultTask.stageId).toBe(project.stages[0]?.id);
+    expect(defaultTask.status).toBe('todo');
+
+    const doneTask = await createTask(owner.api, project.id, { status: 'done' });
+    expect(doneTask.stageId).toBe(project.stages[2]?.id);
+    expect(doneTask.completedAt).toEqual(expect.any(Number));
+
+    const both = await owner.api('POST', `/api/projects/${project.id}/tasks`, {
+      title: 'x',
+      status: 'todo',
+      stageId: project.stages[0]?.id,
+    });
+    expect(both.status).toBe(422);
+
+    const board = await owner.api('GET', `/api/orgs/${org.orgId}/board`);
+    expect(board.body.data.stages).toHaveLength(3);
+  });
+
+  it('manages stages and keeps task status in sync', async ({ expect }) => {
+    org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const [todo, , done] = project.stages;
+
+    expect(
+      (
+        await member.api('POST', `/api/projects/${project.id}/stages`, {
+          name: 'Review',
+          category: 'doing',
+        })
+      ).status,
+    ).toBe(403);
+    const review = await owner.api('POST', `/api/projects/${project.id}/stages`, {
+      name: 'Review',
+      category: 'doing',
+    });
+    expect(review.status).toBe(201);
+    expect(review.body.data.position).toBe(3);
+    const duplicate = await owner.api('POST', `/api/projects/${project.id}/stages`, {
+      name: 'review',
+      category: 'todo',
+    });
+    expect(duplicate.status).toBe(409);
+
+    const task = await createTask(member.api, project.id);
+    const moved = await member.api('POST', `/api/tasks/${task.id}/move`, {
+      stageId: review.body.data.id,
+    });
+    expect(moved.body.data).toMatchObject({ stageId: review.body.data.id, status: 'doing' });
+
+    const toDone = await member.api('POST', `/api/tasks/${task.id}/move`, { stageId: done?.id });
+    const completedAt = toDone.body.data.completedAt;
+    expect(completedAt).toEqual(expect.any(Number));
+
+    const shipped = await owner.api('POST', `/api/projects/${project.id}/stages`, {
+      name: 'Shipped',
+      category: 'done',
+    });
+    const toShipped = await member.api('POST', `/api/tasks/${task.id}/move`, {
+      stageId: shipped.body.data.id,
+    });
+    expect(toShipped.body.data.completedAt).toBe(completedAt);
+
+    const other = await createProject(owner.api, org.orgId, 'Other');
+    const foreignStage = await member.api('POST', `/api/tasks/${task.id}/move`, {
+      stageId: other.stages[0]?.id,
+    });
+    expect(foreignStage.status).toBe(409);
+
+    // Changing a stage's category updates the tasks in it.
+    const inReview = await createTask(member.api, project.id, { stageId: review.body.data.id });
+    const recategorized = await owner.api('PATCH', `/api/stages/${review.body.data.id}`, {
+      category: 'done',
+    });
+    expect(recategorized.status).toBe(200);
+    const tasks = await member.api('GET', `/api/projects/${project.id}/tasks?status=done`);
+    const refreshed = tasks.body.data.items.find((item: { id: string }) => item.id === inReview.id);
+    expect(refreshed).toMatchObject({ status: 'done', completedAt: expect.any(Number) });
+
+    // Reorder must list every stage exactly once.
+    const stages = await owner.api('GET', `/api/projects/${project.id}/stages`);
+    const ids: string[] = stages.body.data.map((stage: { id: string }) => stage.id);
+    expect(
+      (
+        await owner.api('POST', `/api/projects/${project.id}/stages/reorder`, {
+          stageIds: ids.slice(1),
+        })
+      ).status,
+    ).toBe(422);
+    const reordered = await owner.api('POST', `/api/projects/${project.id}/stages/reorder`, {
+      stageIds: [...ids].reverse(),
+    });
+    expect(reordered.body.data.map((stage: { id: string }) => stage.id)).toEqual(
+      [...ids].reverse(),
+    );
+
+    // Deleting a stage that has tasks needs a destination.
+    const blocked = await owner.api('DELETE', `/api/stages/${review.body.data.id}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.field).toBe('moveTo');
+    const deleted = await owner.api(
+      'DELETE',
+      `/api/stages/${shipped.body.data.id}?moveTo=${todo?.id}`,
+    );
+    expect(deleted.status).toBe(200);
+    const afterDelete = await member.api('GET', `/api/projects/${project.id}/tasks`);
+    const movedTask = afterDelete.body.data.items.find(
+      (item: { id: string }) => item.id === task.id,
+    );
+    expect(movedTask).toMatchObject({ stageId: todo?.id, status: 'todo', completedAt: null });
+  });
+
+  it('refuses to delete the last stage', async ({ expect }) => {
+    org = await seedOrg();
+    const { owner } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const [first, second, third] = project.stages;
+    expect((await owner.api('DELETE', `/api/stages/${second?.id}`)).status).toBe(200);
+    expect((await owner.api('DELETE', `/api/stages/${third?.id}`)).status).toBe(200);
+    expect((await owner.api('DELETE', `/api/stages/${first?.id}`)).status).toBe(409);
+  });
+
+  it('maps stages when a task moves to another project', async ({ expect }) => {
+    org = await seedOrg();
+    const { owner } = org.users;
+    const source = await createProject(owner.api, org.orgId, 'Source');
+    const target = await createProject(owner.api, org.orgId, 'Target');
+    const task = await createTask(owner.api, source.id, { status: 'doing' });
+    const moved = await owner.api('PATCH', `/api/tasks/${task.id}`, { projectId: target.id });
+    expect(moved.body.data).toMatchObject({
+      projectId: target.id,
+      stageId: target.stages[1]?.id,
+      status: 'doing',
+    });
+  });
+});
+
+describe('task types', () => {
+  it('gives new orgs the starter task types', async ({ expect }) => {
+    const { users } = await seedOrg();
+    const created = await users.owner.api('POST', '/api/orgs', { name: 'Fresh Org' });
+    expect(created.status).toBe(201);
+    const types = await users.owner.api('GET', `/api/orgs/${created.body.data.id}/task-types`);
+    expect(types.body.data.map((type: { name: string; color: string }) => type.name)).toEqual([
+      'Task',
+      'Bug',
+      'Feature',
+      'Story',
+    ]);
+    const board = await users.owner.api('GET', `/api/orgs/${created.body.data.id}/board`);
+    expect(board.body.data.taskTypes).toHaveLength(4);
+  });
+
+  it('manages org task types and assigns them to tasks', async ({ expect }) => {
+    const org = await seedOrg();
+    const other = await seedOrg();
+    const { owner, admin, member } = org.users;
+
+    expect(
+      (await member.api('POST', `/api/orgs/${org.orgId}/task-types`, { name: 'Bug', color: 'red' }))
+        .status,
+    ).toBe(403);
+    const bug = await admin.api('POST', `/api/orgs/${org.orgId}/task-types`, {
+      name: 'Bug',
+      color: 'red',
+    });
+    expect(bug.status).toBe(201);
+    const feature = await admin.api('POST', `/api/orgs/${org.orgId}/task-types`, {
+      name: 'Feature',
+      color: 'blue',
+    });
+    expect(
+      (await admin.api('POST', `/api/orgs/${org.orgId}/task-types`, { name: 'BUG', color: 'x' }))
+        .status,
+    ).toBe(409);
+
+    const reordered = await admin.api('POST', `/api/orgs/${org.orgId}/task-types/reorder`, {
+      taskTypeIds: [feature.body.data.id, bug.body.data.id],
+    });
+    expect(reordered.body.data.map((type: { name: string }) => type.name)).toEqual([
+      'Feature',
+      'Bug',
+    ]);
+
+    const renamed = await admin.api('PATCH', `/api/task-types/${bug.body.data.id}`, {
+      name: 'Defect',
+    });
+    expect(renamed.body.data.name).toBe('Defect');
+
+    const project = await createProject(owner.api, org.orgId);
+    const typed = await createTask(member.api, project.id, { typeId: bug.body.data.id });
+    await createTask(member.api, project.id);
+    const filtered = await member.api(
+      'GET',
+      `/api/projects/${project.id}/tasks?typeId=${bug.body.data.id}`,
+    );
+    expect(filtered.body.data.items.map((item: { id: string }) => item.id)).toEqual([typed.id]);
+
+    const foreignType = await other.users.admin.api('POST', `/api/orgs/${other.orgId}/task-types`, {
+      name: 'Chore',
+      color: 'grey',
+    });
+    const rejected = await member.api('PATCH', `/api/tasks/${typed.id}`, {
+      typeId: foreignType.body.data.id,
+    });
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error.field).toBe('typeId');
+
+    expect((await admin.api('DELETE', `/api/task-types/${bug.body.data.id}`)).status).toBe(200);
+    const board = await member.api('GET', `/api/orgs/${org.orgId}/board`);
+    expect(board.body.data.taskTypes).toHaveLength(1);
+    const untyped = board.body.data.tasks.find((item: { id: string }) => item.id === typed.id);
+    expect(untyped.typeId).toBeNull();
+  });
+});
+
+describe('subtasks', () => {
+  it('creates subtasks and reports counts on parents', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const parent = await createTask(member.api, project.id, { title: 'Parent' });
+
+    const first = await member.api('POST', `/api/tasks/${parent.id}/subtasks`, { title: 'One' });
+    expect(first.status).toBe(201);
+    expect(first.body.data).toMatchObject({ parentId: parent.id, projectId: project.id });
+    await member.api('POST', `/api/tasks/${parent.id}/subtasks`, { title: 'Two' });
+    await member.api('POST', `/api/tasks/${first.body.data.id}/move`, { status: 'done' });
+
+    const nested = await member.api('POST', `/api/tasks/${first.body.data.id}/subtasks`, {
+      title: 'Nested',
+    });
+    expect(nested.status).toBe(409);
+
+    const subtasks = await member.api('GET', `/api/tasks/${parent.id}/subtasks`);
+    expect(subtasks.body.data.map((item: { title: string }) => item.title)).toEqual(['One', 'Two']);
+
+    const list = await member.api('GET', `/api/projects/${project.id}/tasks`);
+    expect(list.body.data.items).toHaveLength(1);
+    expect(list.body.data.items[0]).toMatchObject({
+      id: parent.id,
+      subtaskCount: 2,
+      subtaskDoneCount: 1,
+    });
+
+    const board = await member.api('GET', `/api/orgs/${org.orgId}/board`);
+    const boardTasks = board.body.data.tasks as { id: string; parentId: string | null }[];
+    expect(boardTasks).toHaveLength(3);
+    expect(boardTasks.find((item) => item.id === parent.id)).toMatchObject({
+      subtaskCount: 2,
+      subtaskDoneCount: 1,
+    });
+    expect(boardTasks.filter((item) => item.parentId === parent.id)).toHaveLength(2);
+  });
+
+  it('lists my open and done tasks and subtasks until they are archived', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const open = await createTask(member.api, project.id, { title: 'Open', assigneeId: member.id });
+    const done = await createTask(member.api, project.id, {
+      title: 'Done',
+      status: 'done',
+      assigneeId: member.id,
+    });
+    await createTask(member.api, project.id, { title: 'Theirs', assigneeId: owner.id });
+    const subtask = await member.api('POST', `/api/tasks/${open.id}/subtasks`, {
+      title: 'Step',
+      assigneeId: member.id,
+    });
+    await member.api('POST', `/api/tasks/${subtask.body.data.id}/move`, { status: 'done' });
+
+    const titles = async () =>
+      (await member.api('GET', `/api/orgs/${org.orgId}/tasks/mine`)).body.data
+        .map((item: { title: string }) => item.title)
+        .sort();
+    expect(await titles()).toEqual(['Done', 'Open', 'Step']);
+
+    await member.api('POST', `/api/tasks/${done.id}/archive`);
+    expect(await titles()).toEqual(['Open', 'Step']);
+  });
+
+  it('archives, deletes, restores, and moves subtasks with their parent', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const target = await createProject(owner.api, org.orgId, 'Target');
+    const parent = await createTask(member.api, project.id, { status: 'done' });
+    const kept = (await member.api('POST', `/api/tasks/${parent.id}/subtasks`, { title: 'Kept' }))
+      .body.data;
+    const removedEarlier = (
+      await member.api('POST', `/api/tasks/${parent.id}/subtasks`, { title: 'Removed' })
+    ).body.data;
+
+    expect((await member.api('POST', `/api/tasks/${kept.id}/archive`)).status).toBe(409);
+    expect(
+      (await member.api('PATCH', `/api/tasks/${kept.id}`, { projectId: target.id })).status,
+    ).toBe(409);
+
+    const archived = await member.api('POST', `/api/projects/${project.id}/tasks/archive-done`);
+    expect(archived.body.data.count).toBe(1);
+    let subtasks = await member.api('GET', `/api/tasks/${parent.id}/subtasks`);
+    expect(subtasks.body.data.every((item: { archivedAt: number | null }) => item.archivedAt)).toBe(
+      true,
+    );
+    await member.api('POST', `/api/tasks/${parent.id}/unarchive`);
+    subtasks = await member.api('GET', `/api/tasks/${parent.id}/subtasks`);
+    expect(
+      subtasks.body.data.every((item: { archivedAt: number | null }) => !item.archivedAt),
+    ).toBe(true);
+
+    await member.api('DELETE', `/api/tasks/${removedEarlier.id}`);
+    await member.api('DELETE', `/api/tasks/${parent.id}`);
+    expect((await member.api('POST', `/api/tasks/${kept.id}/restore`)).status).toBe(409);
+    expect((await member.api('POST', `/api/tasks/${parent.id}/restore`)).status).toBe(200);
+    subtasks = await member.api('GET', `/api/tasks/${parent.id}/subtasks`);
+    expect(subtasks.body.data.map((item: { id: string }) => item.id)).toEqual([kept.id]);
+
+    const moved = await member.api('PATCH', `/api/tasks/${parent.id}`, { projectId: target.id });
+    expect(moved.body.data.projectId).toBe(target.id);
+    subtasks = await member.api('GET', `/api/tasks/${parent.id}/subtasks`);
+    expect(subtasks.body.data[0]).toMatchObject({
+      projectId: target.id,
+      stageId: target.stages[0]?.id,
+    });
+  });
+});
+
+describe('comments', () => {
+  it('enforces comment permissions and paging shape', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, admin, member, guest } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const task = await createTask(member.api, project.id);
+
+    const created = await member.api('POST', `/api/tasks/${task.id}/comments`, {
+      body: '  Looks good  ',
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.data).toMatchObject({
+      taskId: task.id,
+      body: 'Looks good',
+      author: { id: member.id, name: 'member user' },
+    });
+    const commentId = created.body.data.id;
+
+    expect((await guest.api('POST', `/api/tasks/${task.id}/comments`, { body: 'hi' })).status).toBe(
+      403,
+    );
+    expect(
+      (await member.api('POST', `/api/tasks/${task.id}/comments`, { body: '   ' })).status,
+    ).toBe(422);
+    const listed = await guest.api('GET', `/api/tasks/${task.id}/comments`);
+    expect(listed.body.data).toMatchObject({ items: [{ id: commentId }], cursor: null });
+
+    expect(
+      (await admin.api('PATCH', `/api/comments/${commentId}`, { body: 'Hijacked' })).status,
+    ).toBe(403);
+    const edited = await member.api('PATCH', `/api/comments/${commentId}`, { body: 'Edited' });
+    expect(edited.body.data.body).toBe('Edited');
+
+    const ownerComment = await owner.api('POST', `/api/tasks/${task.id}/comments`, {
+      body: 'Owner note',
+    });
+    expect((await member.api('DELETE', `/api/comments/${ownerComment.body.data.id}`)).status).toBe(
+      403,
+    );
+    expect((await admin.api('DELETE', `/api/comments/${commentId}`)).status).toBe(200);
+    const remaining = await member.api('GET', `/api/tasks/${task.id}/comments`);
+    expect(remaining.body.data.items.map((item: { id: string }) => item.id)).toEqual([
+      ownerComment.body.data.id,
+    ]);
+
+    const activity = await member.api('GET', `/api/projects/${project.id}/activity`);
+    const kinds = activity.body.data.items.map((item: { kind: string }) => item.kind);
+    expect(kinds).toEqual(expect.arrayContaining(['comment.created', 'comment.deleted']));
+
+    await member.api('DELETE', `/api/tasks/${task.id}`);
+    expect((await member.api('GET', `/api/tasks/${task.id}/comments`)).status).toBe(404);
+  });
+});
+
+describe('purge', () => {
+  it('purges old comments and hard-deletes projects that have stages', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const task = await createTask(owner.api, project.id);
+    const subtask = await owner.api('POST', `/api/tasks/${task.id}/subtasks`, { title: 'Sub' });
+    expect(subtask.status).toBe(201);
+    const comment = await owner.api('POST', `/api/tasks/${task.id}/comments`, { body: 'Bye' });
+    await owner.api('DELETE', `/api/comments/${comment.body.data.id}`);
+    await owner.api('DELETE', `/api/projects/${project.id}`);
+
+    const longAgo = Date.now() - 31 * DAY;
+    await env.DB.batch([
+      env.DB.prepare('UPDATE comments SET deleted_at = ? WHERE id = ?').bind(
+        longAgo,
+        comment.body.data.id,
+      ),
+      env.DB.prepare('UPDATE projects SET deleted_at = ? WHERE id = ?').bind(longAgo, project.id),
+    ]);
+    const result = await new PurgeService(createDatabase(env.DB)).run();
+    expect(result.comments).toBeGreaterThanOrEqual(1);
+    expect(result.projects).toBeGreaterThanOrEqual(1);
+
+    const leftovers = await env.DB.prepare(
+      'SELECT (SELECT count(*) FROM project_stages WHERE project_id = ?1) AS stages, (SELECT count(*) FROM tasks WHERE project_id = ?1) AS tasks',
+    )
+      .bind(project.id)
+      .first<{ stages: number; tasks: number }>();
+    expect(leftovers).toEqual({ stages: 0, tasks: 0 });
+  });
+});

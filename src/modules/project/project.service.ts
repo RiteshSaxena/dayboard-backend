@@ -1,18 +1,57 @@
-import { and, count, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull } from 'drizzle-orm';
 import { ApiError, conflict, notFound } from '../../core/http/api-error';
 import { createId } from '../../core/security/crypto';
 import { now } from '../../core/utils/text';
 import type { DrizzleDB } from '../../database/database';
-import { notes, projects, tasks, type Project } from '../../database/schema';
+import { notes, projectStages, projects, tasks, type Project } from '../../database/schema';
 import type { AuthActor } from '../auth/auth.types';
 import type { ActivityService } from '../activity/activity.service';
 import type { AuthorizationService } from '../authorization/authorization.service';
+import { buildStarterStages } from '../stage/stage.service';
+import { countSubtasks, withSubtaskCounts } from '../task/task.service';
+import type { TaskTypeService } from '../task-type/task-type.service';
+
+/** First color of the frontend project palette (`PROJECT_COLORS` in frontend/src/lib/board-data.ts). */
+const DEFAULT_PROJECT_COLOR = '#617a59';
+
+export function buildProject(input: {
+  orgId: string;
+  createdBy: string;
+  name: string;
+  color: string;
+  timestamp: number;
+}): Project {
+  return {
+    id: createId(),
+    orgId: input.orgId,
+    name: input.name,
+    color: input.color,
+    position: input.timestamp,
+    archivedAt: null,
+    createdBy: input.createdBy,
+    createdAt: input.timestamp,
+    updatedAt: input.timestamp,
+    deletedAt: null,
+  };
+}
+
+/** The project every personal board starts with. */
+export function buildDefaultProject(orgId: string, createdBy: string, timestamp: number): Project {
+  return buildProject({
+    orgId,
+    createdBy,
+    name: 'Default',
+    color: DEFAULT_PROJECT_COLOR,
+    timestamp,
+  });
+}
 
 export class ProjectService {
   constructor(
     private readonly db: DrizzleDB,
     private readonly authorization: AuthorizationService,
     private readonly activity: ActivityService,
+    private readonly taskTypes: TaskTypeService,
   ) {}
 
   async list(actor: AuthActor, orgId: string) {
@@ -32,19 +71,12 @@ export class ProjectService {
       throw new ApiError(409, 'conflict', 'This organization has reached its project limit');
     }
     const timestamp = now();
-    const project = {
-      id: createId(),
-      orgId,
-      name: input.name,
-      color: input.color,
-      position: timestamp,
-      archivedAt: null,
-      createdBy: actor.user.id,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      deletedAt: null,
-    };
-    await this.db.insert(projects).values(project);
+    const project = buildProject({ orgId, createdBy: actor.user.id, ...input, timestamp });
+    const stages = buildStarterStages(project.id, timestamp);
+    await this.db.batch([
+      this.db.insert(projects).values(project),
+      this.db.insert(projectStages).values(stages),
+    ]);
     await this.activity.record({
       orgId,
       projectId: project.id,
@@ -52,7 +84,7 @@ export class ProjectService {
       kind: 'project.created',
       payload: project,
     });
-    return project;
+    return { ...project, stages };
   }
 
   async update(
@@ -138,31 +170,47 @@ export class ProjectService {
   }
 
   private async getBoard(orgId: string) {
-    const projectRows = await this.db.query.projects.findMany({
-      where: and(
-        eq(projects.orgId, orgId),
-        isNull(projects.deletedAt),
-        isNull(projects.archivedAt),
-      ),
-      orderBy: [desc(projects.position), desc(projects.id)],
-    });
-    if (projectRows.length === 0) return { projects: [], tasks: [], notes: [] };
-    const ids = projectRows.map((project) => project.id);
-    const [taskRows, noteRows] = await Promise.all([
-      this.db.query.tasks.findMany({
-        where: and(
-          inArray(tasks.projectId, ids),
-          isNull(tasks.deletedAt),
-          isNull(tasks.archivedAt),
-        ),
-        orderBy: [desc(tasks.position), desc(tasks.id)],
+    // Every child query filters through a join on the org instead of an `IN (...)` list of
+    // project IDs: D1 allows at most 100 bound parameters per query.
+    const boardProject = and(
+      eq(projects.orgId, orgId),
+      isNull(projects.deletedAt),
+      isNull(projects.archivedAt),
+    );
+    const [projectRows, taskTypeRows, stageRows, taskRows, noteRows] = await Promise.all([
+      this.db.query.projects.findMany({
+        where: boardProject,
+        orderBy: [desc(projects.position), desc(projects.id)],
       }),
-      this.db.query.notes.findMany({
-        where: and(inArray(notes.projectId, ids), isNull(notes.deletedAt)),
-        orderBy: [desc(notes.pinned), desc(notes.position), desc(notes.id)],
-      }),
+      this.taskTypes.listTaskTypes(orgId),
+      this.db
+        .select({ stage: projectStages })
+        .from(projectStages)
+        .innerJoin(projects, eq(projectStages.projectId, projects.id))
+        .where(boardProject)
+        .orderBy(asc(projectStages.position), asc(projectStages.id)),
+      this.db
+        .select({ task: tasks })
+        .from(tasks)
+        .innerJoin(projects, eq(tasks.projectId, projects.id))
+        .where(and(boardProject, isNull(tasks.deletedAt), isNull(tasks.archivedAt)))
+        .orderBy(desc(tasks.position), desc(tasks.id)),
+      this.db
+        .select({ note: notes })
+        .from(notes)
+        .innerJoin(projects, eq(notes.projectId, projects.id))
+        .where(and(boardProject, isNull(notes.deletedAt)))
+        .orderBy(desc(notes.pinned), desc(notes.position), desc(notes.id)),
     ]);
-    return { projects: projectRows, tasks: taskRows, notes: noteRows };
+    const allTasks = taskRows.map((row) => row.task);
+    return {
+      projects: projectRows,
+      stages: stageRows.map((row) => row.stage),
+      taskTypes: taskTypeRows,
+      // subtasks are board cards too (linked by parentId); parents also carry their subtask counts
+      tasks: withSubtaskCounts(allTasks, countSubtasks(allTasks)),
+      notes: noteRows.map((row) => row.note),
+    };
   }
 
   private async findProject(id: string): Promise<Project | null> {

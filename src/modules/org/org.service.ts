@@ -7,6 +7,7 @@ import {
   invites,
   memberships,
   orgs,
+  taskTypes,
   users,
   type Invite,
   type Membership,
@@ -17,6 +18,7 @@ import type { ActivityService } from '../activity/activity.service';
 import type { AuthorizationService, Role } from '../authorization/authorization.service';
 import type { MailService } from '../mail/mail.service';
 import type { RateLimitService } from '../security/rate-limit.service';
+import { buildStarterTaskTypes } from '../task-type/task-type.service';
 
 const DAY = 86_400_000;
 
@@ -285,6 +287,7 @@ export class OrgService {
     await this.db.batch([
       this.db.insert(orgs).values(org),
       this.db.insert(memberships).values(membership),
+      this.db.insert(taskTypes).values(buildStarterTaskTypes(org.id, org.createdAt)),
     ]);
   }
 

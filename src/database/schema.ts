@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+  type AnySQLiteColumn,
   check,
   index,
   integer,
@@ -160,6 +161,45 @@ export const projects = sqliteTable(
   ],
 );
 
+export const taskTypes = sqliteTable(
+  'task_types',
+  {
+    id: text('id', { length: 21 }).primaryKey(),
+    orgId: text('org_id', { length: 21 })
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    color: text('color').notNull(),
+    position: integer('position').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('task_types_org_position_idx').on(table.orgId, table.position),
+    check('task_types_name_length', sql`length(${table.name}) between 1 and 30`),
+  ],
+);
+
+export const projectStages = sqliteTable(
+  'project_stages',
+  {
+    id: text('id', { length: 21 }).primaryKey(),
+    projectId: text('project_id', { length: 21 })
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    category: text('category', { enum: ['todo', 'doing', 'done'] }).notNull(),
+    position: integer('position').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('project_stages_project_position_idx').on(table.projectId, table.position),
+    check('project_stages_name_length', sql`length(${table.name}) between 1 and 30`),
+    check('project_stages_category_check', sql`${table.category} in ('todo', 'doing', 'done')`),
+  ],
+);
+
 export const tasks = sqliteTable(
   'tasks',
   {
@@ -167,6 +207,13 @@ export const tasks = sqliteTable(
     projectId: text('project_id', { length: 21 })
       .notNull()
       .references(() => projects.id, { onDelete: 'cascade' }),
+    parentId: text('parent_id', { length: 21 }).references((): AnySQLiteColumn => tasks.id, {
+      onDelete: 'cascade',
+    }),
+    stageId: text('stage_id', { length: 21 }).references(() => projectStages.id),
+    typeId: text('type_id', { length: 21 }).references(() => taskTypes.id, {
+      onDelete: 'set null',
+    }),
     title: text('title').notNull(),
     description: text('description').notNull().default(''),
     status: text('status', { enum: ['todo', 'doing', 'done'] }).notNull(),
@@ -182,6 +229,9 @@ export const tasks = sqliteTable(
   },
   (table) => [
     index('tasks_project_position_idx').on(table.projectId, table.deletedAt, table.position),
+    index('tasks_parent_idx').on(table.parentId, table.deletedAt),
+    index('tasks_stage_idx').on(table.stageId),
+    index('tasks_type_idx').on(table.typeId),
     check('tasks_title_length', sql`length(${table.title}) between 1 and 240`),
     check('tasks_description_length', sql`length(${table.description}) <= 2000`),
     check('tasks_status_check', sql`${table.status} in ('todo', 'doing', 'done')`),
@@ -189,6 +239,25 @@ export const tasks = sqliteTable(
       'tasks_due_date_check',
       sql`${table.dueDate} is null or ${table.dueDate} glob '????-??-??'`,
     ),
+  ],
+);
+
+export const comments = sqliteTable(
+  'comments',
+  {
+    id: text('id', { length: 21 }).primaryKey(),
+    taskId: text('task_id', { length: 21 })
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    authorId: text('author_id', { length: 21 })
+      .notNull()
+      .references(() => users.id),
+    body: text('body').notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index('comments_task_created_idx').on(table.taskId, table.deletedAt, table.createdAt),
+    check('comments_body_length', sql`length(${table.body}) between 1 and 5000`),
   ],
 );
 
@@ -251,5 +320,8 @@ export type Org = typeof orgs.$inferSelect;
 export type Membership = typeof memberships.$inferSelect;
 export type Invite = typeof invites.$inferSelect;
 export type Project = typeof projects.$inferSelect;
+export type TaskType = typeof taskTypes.$inferSelect;
+export type ProjectStage = typeof projectStages.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type Comment = typeof comments.$inferSelect;
 export type Note = typeof notes.$inferSelect;

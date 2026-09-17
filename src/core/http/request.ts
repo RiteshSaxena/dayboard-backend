@@ -42,3 +42,21 @@ export function parseCursor(value: string | undefined): { position: number; id: 
 export function makeCursor(row: { position: number; id: string } | undefined): string | null {
   return row ? btoa(JSON.stringify({ position: row.position, id: row.id })) : null;
 }
+
+export function parseTimeCursor(
+  value: string | undefined,
+): { createdAt: number; id: string } | null {
+  if (!value) return null;
+  try {
+    const decoded = JSON.parse(atob(value)) as unknown;
+    const result = z.object({ createdAt: z.number().int(), id: idParamSchema }).safeParse(decoded);
+    if (!result.success) throw new Error();
+    return result.data;
+  } catch {
+    throw new ApiError(422, 'validation', 'Invalid cursor', 'cursor');
+  }
+}
+
+export function makeTimeCursor(row: { createdAt: number; id: string } | undefined): string | null {
+  return row ? btoa(JSON.stringify({ createdAt: row.createdAt, id: row.id })) : null;
+}

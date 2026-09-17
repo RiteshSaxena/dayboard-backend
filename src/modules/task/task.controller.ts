@@ -38,6 +38,23 @@ export class TaskController {
       return c.json({ data }, 201);
     });
 
+    app.get('/api/tasks/:id/subtasks', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const data = await this.taskService.listSubtasks(actor, taskId);
+
+      return c.json({ data });
+    });
+
+    app.post('/api/tasks/:id/subtasks', async (c) => {
+      const actor = requireActor(c);
+      const taskId = parseId(c.req.param('id'));
+      const input = await parseJson(c, createTaskSchema);
+      const data = await this.taskService.createSubtask(actor, taskId, input);
+
+      return c.json({ data }, 201);
+    });
+
     app.patch('/api/tasks/:id', async (c) => {
       const actor = requireActor(c);
       const taskId = parseId(c.req.param('id'));
@@ -51,7 +68,7 @@ export class TaskController {
       const actor = requireActor(c);
       const taskId = parseId(c.req.param('id'));
       const input = await parseJson(c, moveTaskSchema);
-      const data = await this.taskService.move(actor, taskId, input.status);
+      const data = await this.taskService.move(actor, taskId, input);
 
       return c.json({ data });
     });

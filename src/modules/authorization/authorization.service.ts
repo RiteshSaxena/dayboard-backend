@@ -1,14 +1,20 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { DrizzleDB } from '../../database/database';
 import {
+  comments,
   memberships,
   notes,
+  projectStages,
   projects,
+  taskTypes,
   tasks,
+  type Comment,
   type Membership,
   type Note,
   type Project,
+  type ProjectStage,
   type Task,
+  type TaskType,
 } from '../../database/schema';
 import { ApiError, forbidden, notFound } from '../../core/http/api-error';
 import type { AuthActor } from '../auth/auth.types';
@@ -83,6 +89,59 @@ export class AuthorizationService {
       .where(and(eq(notes.id, noteId), isNull(notes.deletedAt), isNull(projects.deletedAt)))
       .limit(1);
     if (!row[0]) throw notFound('Note');
+    const membership = await this.requireOrg(actor, row[0].project.orgId, minimum);
+    return { ...row[0], membership };
+  }
+
+  async requireStage(
+    actor: AuthActor,
+    stageId: string,
+    minimum: Role = 'guest',
+  ): Promise<{ stage: ProjectStage; project: Project; membership: Membership }> {
+    const row = await this.db
+      .select({ stage: projectStages, project: projects })
+      .from(projectStages)
+      .innerJoin(projects, eq(projectStages.projectId, projects.id))
+      .where(and(eq(projectStages.id, stageId), isNull(projects.deletedAt)))
+      .limit(1);
+    if (!row[0]) throw notFound('Stage');
+    const membership = await this.requireOrg(actor, row[0].project.orgId, minimum);
+    return { ...row[0], membership };
+  }
+
+  async requireTaskType(
+    actor: AuthActor,
+    taskTypeId: string,
+    minimum: Role = 'guest',
+  ): Promise<{ taskType: TaskType; membership: Membership }> {
+    const taskType = await this.db.query.taskTypes.findFirst({
+      where: eq(taskTypes.id, taskTypeId),
+    });
+    if (!taskType) throw notFound('Task type');
+    const membership = await this.requireOrg(actor, taskType.orgId, minimum);
+    return { taskType, membership };
+  }
+
+  async requireComment(
+    actor: AuthActor,
+    commentId: string,
+    minimum: Role = 'guest',
+  ): Promise<{ comment: Comment; task: Task; project: Project; membership: Membership }> {
+    const row = await this.db
+      .select({ comment: comments, task: tasks, project: projects })
+      .from(comments)
+      .innerJoin(tasks, eq(comments.taskId, tasks.id))
+      .innerJoin(projects, eq(tasks.projectId, projects.id))
+      .where(
+        and(
+          eq(comments.id, commentId),
+          isNull(comments.deletedAt),
+          isNull(tasks.deletedAt),
+          isNull(projects.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!row[0]) throw notFound('Comment');
     const membership = await this.requireOrg(actor, row[0].project.orgId, minimum);
     return { ...row[0], membership };
   }
