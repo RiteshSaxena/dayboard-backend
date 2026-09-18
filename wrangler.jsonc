@@ -11,9 +11,9 @@
   "compatibility_date": "2026-09-14",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "APP_URL": "https://dayboard.space",
-    "ALLOWED_ORIGINS": "https://dayboard.space",
-    "TURNSTILE_HOSTNAMES": "dayboard.space",
+    "APP_URL": "https://app.dayboard.space",
+    "ALLOWED_ORIGINS": "https://dayboard.space,https://app.dayboard.space",
+    "TURNSTILE_HOSTNAMES": "dayboard.space,app.dayboard.space",
     "EMAIL_FROM": "Dayboard <noreply@dayboard.space>",
     "EMAIL_REPLY_TO": "hello@dayboard.space",
     "SMTP_PORT": "587",
