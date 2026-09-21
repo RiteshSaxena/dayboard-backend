@@ -7,3 +7,4 @@ dist/
 coverage/
 worker-configuration.d.ts
 *.log
+docs/
