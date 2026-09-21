@@ -22,6 +22,20 @@
       "when": 1789644302424,
       "tag": "0002_mentions_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1789713227447,
+      "tag": "0003_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1789717226556,
+      "tag": "0004_task_priority",
+      "breakpoints": true
     }
   ]
 }

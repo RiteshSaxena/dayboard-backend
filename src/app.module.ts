@@ -11,6 +11,8 @@ import { ActivityController } from './modules/activity/activity.controller';
 import { ActivityService } from './modules/activity/activity.service';
 import { AuthController } from './modules/auth/auth.controller';
 import { AuthService } from './modules/auth/auth.service';
+import { AttachmentController } from './modules/attachment/attachment.controller';
+import { AttachmentService } from './modules/attachment/attachment.service';
 import { AuthorizationService } from './modules/authorization/authorization.service';
 import { CommentController } from './modules/comment/comment.controller';
 import { CommentService } from './modules/comment/comment.service';
@@ -81,11 +83,18 @@ export class AppModule {
       notificationService,
     );
     const noteService = new NoteService(db, authorizationService, activityService);
+    const attachmentService = new AttachmentService(
+      db,
+      authorizationService,
+      activityService,
+      runtime,
+    );
     const commentService = new CommentService(
       db,
       authorizationService,
       activityService,
       notificationService,
+      attachmentService,
     );
 
     this.configureMiddleware(authService);
@@ -96,6 +105,7 @@ export class AppModule {
     new TaskTypeController(taskTypeService).mount(this.app);
     new TaskController(taskService).mount(this.app);
     new CommentController(commentService).mount(this.app);
+    new AttachmentController(attachmentService).mount(this.app);
     new NotificationController(notificationService).mount(this.app);
     new NoteController(noteService).mount(this.app);
     new ActivityController(activityService).mount(this.app);
@@ -108,7 +118,7 @@ export class AppModule {
       const allowed = c.env.ALLOWED_ORIGINS.split(',').map((value) => value.trim());
       return cors({
         origin: origin && allowed.includes(origin) ? origin : '',
-        allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+        allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         allowHeaders: ['Authorization', 'Content-Type'],
         maxAge: 86400,
       })(c, next);

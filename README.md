@@ -76,3 +76,7 @@ Before deployment:
 SMTP sends directly during `ctx.waitUntil()` using `worker-mailer`. No Queue resources are required.
 
 Google login, realtime updates, and import/export are outside the current scope.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

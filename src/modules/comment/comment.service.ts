@@ -29,6 +29,7 @@ import {
 import type { ActivityService } from '../activity/activity.service';
 import type { AuthActor } from '../auth/auth.types';
 import type { AuthorizationService } from '../authorization/authorization.service';
+import { parseAttachmentTokens, type AttachmentService } from '../attachment/attachment.service';
 import type { NotificationService } from '../notification/notification.service';
 import { MAX_MENTIONS, parseMentions } from './mentions';
 
@@ -44,6 +45,7 @@ export class CommentService {
     private readonly authorization: AuthorizationService,
     private readonly activity: ActivityService,
     private readonly notifications: NotificationService,
+    private readonly attachments: AttachmentService,
   ) {}
 
   async list(actor: AuthActor, taskId: string, rawCursor?: string) {
@@ -72,6 +74,8 @@ export class CommentService {
   async create(actor: AuthActor, taskId: string, body: string) {
     const { task, project } = await this.authorization.requireTask(actor, taskId, 'member');
     const mentionedUserIds = await this.resolveMentions(project.orgId, body);
+    const attachmentIds = parseAttachmentTokens(body);
+    await this.attachments.requireForComment(taskId, attachmentIds);
     const timestamp = now();
     const comment = {
       id: createId(),
@@ -85,6 +89,7 @@ export class CommentService {
     await this.db.batch([
       this.db.insert(comments).values(comment),
       ...this.mentionInserts(comment.id, mentionedUserIds),
+      ...this.attachments.linkStatements(comment.id, taskId, attachmentIds),
     ]);
     await this.activity.record({
       orgId: project.orgId,
@@ -115,6 +120,8 @@ export class CommentService {
       throw forbidden('Only the author can edit this comment');
     }
     const mentionedUserIds = await this.resolveMentions(project.orgId, body);
+    const attachmentIds = parseAttachmentTokens(body);
+    await this.attachments.requireForComment(comment.taskId, attachmentIds);
     const previous = await this.db
       .select({ userId: commentMentions.userId })
       .from(commentMentions)
@@ -123,6 +130,7 @@ export class CommentService {
       this.db.update(comments).set({ body, updatedAt: now() }).where(eq(comments.id, id)),
       this.db.delete(commentMentions).where(eq(commentMentions.commentId, id)),
       ...this.mentionInserts(id, mentionedUserIds),
+      ...this.attachments.linkStatements(id, comment.taskId, attachmentIds),
     ]);
     // Only people who were not already mentioned hear about an edit.
     const alreadyMentioned = new Set(previous.map((row) => row.userId));
@@ -244,7 +252,7 @@ export class CommentService {
       : [this.db.insert(commentMentions).values(userIds.map((userId) => ({ commentId, userId })))];
   }
 
-  /** Adds `mentions`: the mentioned people who are still members, in body order. */
+  /** Adds `mentions` (people still in the org, in body order) and the comment's `attachments`. */
   private async withMentions(taskId: string, items: CommentRow[]) {
     const [first] = items;
     const last = items.at(-1);
@@ -271,6 +279,7 @@ export class CommentService {
       people.set(row.user.id, row.user);
       byComment.set(row.commentId, people);
     }
+    const attachmentsByComment = await this.attachments.forComments(taskId);
     return items.map((item) => {
       const people = byComment.get(item.id);
       return {
@@ -279,6 +288,7 @@ export class CommentService {
           const person = people?.get(userId);
           return person ? [person] : [];
         }),
+        attachments: attachmentsByComment.get(item.id) ?? [],
       };
     });
   }

@@ -8,9 +8,17 @@
       "custom_domain": true,
     },
   ],
+  // `wrangler dev` otherwise presents requests as https://api.dayboard.space (the first route), so
+  // links the API builds from the request, such as signed file URLs, would point at production.
+  "dev": {
+    "port": 8787,
+  },
   "compatibility_date": "2026-09-14",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
+    // Public address of this API. File links are built from it, because `wrangler dev` reports
+    // request URLs as the first configured route. `.dev.vars` overrides it locally.
+    "API_URL": "https://api.dayboard.space",
     "APP_URL": "https://app.dayboard.space",
     "ALLOWED_ORIGINS": "https://dayboard.space,https://app.dayboard.space",
     "TURNSTILE_HOSTNAMES": "dayboard.space,app.dayboard.space",
@@ -18,10 +26,30 @@
     "EMAIL_REPLY_TO": "hello@dayboard.space",
     "SMTP_PORT": "587",
     "SMTP_SECURITY": "starttls",
+    "R2_ACCOUNT_ID": "e3596506633da2beea00357283c9b414",
+    "R2_BUCKET": "dayboard",
   },
   "secrets": {
-    "required": ["TURNSTILE_SECRET", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD"],
+    "required": [
+      "TURNSTILE_SECRET",
+      "SMTP_HOST",
+      "SMTP_USERNAME",
+      "SMTP_PASSWORD",
+      "FILE_URL_SECRET",
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY",
+    ],
   },
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "dayboard",
+      // `wrangler dev` uses the dev bucket, and `remote` points the binding at the real thing, so
+      // uploads and reads agree while D1 stays local.
+      "preview_bucket_name": "dayboard-dev",
+      "remote": true,
+    },
+  ],
   "d1_databases": [
     {
       "binding": "DB",

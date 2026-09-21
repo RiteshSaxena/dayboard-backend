@@ -2,6 +2,7 @@
   "name": "dayboard-api",
   "version": "1.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@noble/hashes": "latest",
+    "aws4fetch": "^1.0.20",
     "drizzle-orm": "latest",
     "hono": "latest",
     "worker-mailer": "^1.2.1",

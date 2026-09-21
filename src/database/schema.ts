@@ -217,6 +217,8 @@ export const tasks = sqliteTable(
     title: text('title').notNull(),
     description: text('description').notNull().default(''),
     status: text('status', { enum: ['todo', 'doing', 'done'] }).notNull(),
+    // Nullable: tasks created before priorities existed have none, and the API treats that as normal.
+    priority: text('priority', { enum: ['low', 'normal', 'high', 'urgent'] }),
     assigneeId: text('assignee_id', { length: 21 }).references(() => users.id),
     dueDate: text('due_date'),
     position: integer('position').notNull(),
@@ -317,6 +319,46 @@ export const notificationPreferences = sqliteTable('notification_preferences', {
   updatedAt: integer('updated_at').notNull(),
 });
 
+export const attachments = sqliteTable(
+  'attachments',
+  {
+    id: text('id', { length: 21 }).primaryKey(),
+    orgId: text('org_id', { length: 21 })
+      .notNull()
+      .references(() => orgs.id, { onDelete: 'cascade' }),
+    taskId: text('task_id', { length: 21 })
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    // Set when the file is referenced by an <attachment:id> token in a comment body.
+    commentId: text('comment_id', { length: 21 }).references(() => comments.id, {
+      onDelete: 'set null',
+    }),
+    uploadedBy: text('uploaded_by', { length: 21 })
+      .notNull()
+      .references(() => users.id),
+    filename: text('filename').notNull(),
+    contentType: text('content_type').notNull(),
+    // How the file is served: images and videos can play inline, everything else downloads.
+    kind: text('kind', { enum: ['image', 'video', 'file'] }).notNull(),
+    size: integer('size').notNull(),
+    key: text('key').notNull(),
+    // `pending` until the upload is confirmed; only `ready` rows are listed or served.
+    status: text('status', { enum: ['pending', 'ready'] })
+      .notNull()
+      .default('pending'),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex('attachments_key_unique').on(table.key),
+    index('attachments_task_idx').on(table.taskId, table.deletedAt),
+    index('attachments_org_idx').on(table.orgId, table.deletedAt),
+    index('attachments_status_idx').on(table.status, table.createdAt),
+    check('attachments_kind_check', sql`${table.kind} in ('image', 'video', 'file')`),
+    check('attachments_status_check', sql`${table.status} in ('pending', 'ready')`),
+    check('attachments_size_check', sql`${table.size} >= 0`),
+  ],
+);
+
 export const activity = sqliteTable(
   'activity',
   {
@@ -353,5 +395,6 @@ export type TaskType = typeof taskTypes.$inferSelect;
 export type ProjectStage = typeof projectStages.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type Comment = typeof comments.$inferSelect;
+export type Attachment = typeof attachments.$inferSelect;
 export type NotificationPreferences = typeof notificationPreferences.$inferSelect;
 export type Note = typeof notes.$inferSelect;

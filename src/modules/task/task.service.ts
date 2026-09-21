@@ -13,7 +13,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import type { SQLiteUpdateSetSource } from 'drizzle-orm/sqlite-core';
-import { conflict, notFound } from '../../core/http/api-error';
+import { badRequest, conflict, notFound } from '../../core/http/api-error';
 import { makeCursor, parseCursor } from '../../core/http/request';
 import { createId } from '../../core/security/crypto';
 import { now } from '../../core/utils/text';
@@ -27,6 +27,8 @@ import { stageAssignment, type StageCategory, type StageService } from '../stage
 import type { TaskTypeService } from '../task-type/task-type.service';
 
 const PAGE_SIZE = 200;
+// Spacing between tasks when a column or subtask list is renumbered.
+const POSITION_STEP = 1024;
 const MAX_SUBTASKS = 100;
 const CATEGORIES: StageCategory[] = ['todo', 'doing', 'done'];
 
@@ -36,6 +38,7 @@ interface TaskInput {
   dueDate?: string | null;
   assigneeId?: string | null;
   typeId?: string | null;
+  priority?: Task['priority'];
   stageId?: string;
   status?: Task['status'];
 }
@@ -49,6 +52,7 @@ const TRACKED_FIELDS = [
   'projectId',
   'stageId',
   'typeId',
+  'priority',
   'assigneeId',
   'dueDate',
   'archivedAt',
@@ -118,6 +122,7 @@ export class TaskService {
     projectId: string,
     filter: {
       status?: Task['status'];
+      priority?: Task['priority'];
       stageId?: string;
       typeId?: string;
       archived?: string;
@@ -133,6 +138,7 @@ export class TaskService {
     if (filter.status) conditions.push(eq(tasks.status, filter.status));
     if (filter.stageId) conditions.push(eq(tasks.stageId, filter.stageId));
     if (filter.typeId) conditions.push(eq(tasks.typeId, filter.typeId));
+    if (filter.priority) conditions.push(eq(tasks.priority, filter.priority));
     if (filter.archived === 'true') conditions.push(isNotNull(tasks.archivedAt));
     else conditions.push(isNull(tasks.archivedAt));
     const cursor = parseCursor(filter.cursor);
@@ -197,6 +203,7 @@ export class TaskService {
       dueDate?: string | null;
       assigneeId?: string | null;
       typeId?: string | null;
+      priority?: Task['priority'];
       projectId?: string;
     },
   ) {
@@ -246,23 +253,57 @@ export class TaskService {
     return task;
   }
 
-  async move(actor: AuthActor, id: string, input: { stageId?: string; status?: Task['status'] }) {
+  /**
+   * Moves a task to a stage, optionally next to another task. Without a neighbour a top-level task
+   * goes to the top of the column and a subtask keeps its place in its parent's list.
+   */
+  async move(
+    actor: AuthActor,
+    id: string,
+    input: {
+      stageId?: string;
+      status?: Task['status'];
+      beforeTaskId?: string;
+      afterTaskId?: string;
+    },
+  ) {
     const current = await this.authorization.requireTask(actor, id, 'member');
     const stage = await this.stages.resolveForTask(current.task.projectId, input);
     const timestamp = now();
+    const neighbourId = input.beforeTaskId ?? input.afterTaskId;
+    const placement = neighbourId
+      ? await this.placeNextTo(
+          current.task,
+          stage.id,
+          neighbourId,
+          input.beforeTaskId ? 'before' : 'after',
+          timestamp,
+        )
+      : null;
+    const renumber = (placement?.renumber ?? []).map((row) =>
+      this.db.update(tasks).set({ position: row.position }).where(eq(tasks.id, row.id)),
+    );
+
     if (current.task.parentId) {
-      // Subtasks keep their list position and follow the parent's archive state.
-      await this.db
-        .update(tasks)
-        .set({ ...stageAssignment(stage, timestamp), updatedAt: timestamp })
-        .where(eq(tasks.id, id));
+      // Subtasks follow the parent's archive state.
+      await this.db.batch([
+        this.db
+          .update(tasks)
+          .set({
+            ...stageAssignment(stage, timestamp),
+            ...(placement ? { position: placement.position } : {}),
+            updatedAt: timestamp,
+          })
+          .where(eq(tasks.id, id)),
+        ...renumber,
+      ]);
     } else {
       await this.db.batch([
         this.db
           .update(tasks)
           .set({
             ...stageAssignment(stage, timestamp),
-            position: timestamp,
+            position: placement?.position ?? timestamp,
             archivedAt: null,
             updatedAt: timestamp,
           })
@@ -271,9 +312,11 @@ export class TaskService {
           .update(tasks)
           .set({ archivedAt: null, updatedAt: timestamp })
           .where(and(eq(tasks.parentId, id), isNotNull(tasks.archivedAt))),
+        ...renumber,
       ]);
     }
-    return this.recordUpdate(actor, current.project, current.task);
+    // A reorder within the same stage changes nothing a history view reports.
+    return this.recordUpdate(actor, current.project, current.task, { onlyIfChanged: true });
   }
 
   async archive(actor: AuthActor, id: string) {
@@ -450,6 +493,7 @@ export class TaskService {
       parentId,
       stageId: stage.id,
       typeId: input.typeId ?? null,
+      priority: input.priority ?? 'normal',
       title: input.title,
       description: input.description,
       status: stage.category,
@@ -477,18 +521,109 @@ export class TaskService {
   }
 
   /** Records `task.updated` with the task after the change and what changed since `before`. */
-  private async recordUpdate(actor: AuthActor, project: Project, before: Task) {
+  private async recordUpdate(
+    actor: AuthActor,
+    project: Project,
+    before: Task,
+    options: { onlyIfChanged?: boolean } = {},
+  ) {
     const task = await this.findTaskById(before.id);
     if (!task) throw notFound('Task');
+    const changes = taskChanges(before, task);
+    if (options.onlyIfChanged && changes.length === 0) return task;
     await this.activity.record({
       orgId: project.orgId,
       projectId: task.projectId,
       taskId: task.id,
       actorId: actor.user.id,
       kind: 'task.updated',
-      payload: { ...task, changes: taskChanges(before, task) },
+      payload: { ...task, changes },
     });
     return task;
+  }
+
+  /**
+   * The position that puts `task` directly before or after `neighbourId`, in display order. Columns
+   * list top-level tasks newest position first; a parent lists its subtasks lowest position first.
+   * When the neighbours' positions leave no room, the whole list is renumbered and returned too.
+   */
+  private async placeNextTo(
+    task: Task,
+    stageId: string,
+    neighbourId: string,
+    side: 'before' | 'after',
+    timestamp: number,
+  ): Promise<{ position: number; renumber: { id: string; position: number }[] }> {
+    const field = side === 'before' ? 'beforeTaskId' : 'afterTaskId';
+    if (neighbourId === task.id) throw badRequest('A task cannot be placed next to itself', field);
+    const ascending = Boolean(task.parentId);
+    const siblings = await this.db
+      .select({ id: tasks.id, position: tasks.position })
+      .from(tasks)
+      .where(
+        task.parentId
+          ? and(eq(tasks.parentId, task.parentId), isNull(tasks.deletedAt))
+          : and(
+              eq(tasks.projectId, task.projectId),
+              eq(tasks.stageId, stageId),
+              isNull(tasks.parentId),
+              isNull(tasks.deletedAt),
+              isNull(tasks.archivedAt),
+            ),
+      )
+      .orderBy(
+        ...(ascending
+          ? [asc(tasks.position), asc(tasks.id)]
+          : [desc(tasks.position), desc(tasks.id)]),
+      );
+    const others = siblings.filter((row) => row.id !== task.id);
+    const index = others.findIndex((row) => row.id === neighbourId);
+    if (index < 0) {
+      throw conflict(
+        task.parentId
+          ? 'That task is not another subtask of the same parent'
+          : 'That task is not in the target stage',
+        field,
+      );
+    }
+    const insertAt = side === 'before' ? index : index + 1;
+    const previous = others[insertAt - 1]?.position;
+    const next = others[insertAt]?.position;
+
+    const position = ascending
+      ? previous === undefined
+        ? next! - POSITION_STEP
+        : next === undefined
+          ? Math.max(timestamp, previous + 1)
+          : next - previous >= 2
+            ? Math.floor((previous + next) / 2)
+            : null
+      : previous === undefined
+        ? Math.max(timestamp, next! + 1)
+        : next === undefined
+          ? previous - POSITION_STEP
+          : previous - next >= 2
+            ? Math.floor((previous + next) / 2)
+            : null;
+    if (position !== null) return { position, renumber: [] };
+
+    // No room between the neighbours: space the list out again, ending at the current time so
+    // tasks created afterwards still land on top (or at the end, for subtasks).
+    const ordered = [
+      ...others.slice(0, insertAt).map((row) => row.id),
+      task.id,
+      ...others.slice(insertAt).map((row) => row.id),
+    ];
+    const spaced = ordered.map((rowId, i) => ({
+      id: rowId,
+      position: ascending
+        ? timestamp - (ordered.length - 1 - i) * POSITION_STEP
+        : timestamp - i * POSITION_STEP,
+    }));
+    return {
+      position: spaced.find((row) => row.id === task.id)!.position,
+      renumber: spaced.filter((row) => row.id !== task.id),
+    };
   }
 
   private async subtaskCounts(projectId: string): Promise<SubtaskCounts> {

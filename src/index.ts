@@ -8,7 +8,9 @@ export default {
     return app.app.fetch(request, env, ctx);
   },
   async scheduled(controller, env) {
-    const result = await new PurgeService(createDatabase(env.DB)).run(controller.scheduledTime);
+    const result = await new PurgeService(createDatabase(env.DB), env.FILES).run(
+      controller.scheduledTime,
+    );
     console.log(JSON.stringify({ message: 'purge complete', ...result }));
   },
 } satisfies ExportedHandler<Env>;

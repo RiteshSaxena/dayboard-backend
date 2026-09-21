@@ -41,7 +41,7 @@ describe('large orgs', () => {
         ).bind(createId(), org.users.guest.id, createId(), expired, expired, expired),
       ),
     );
-    const result = await new PurgeService(createDatabase(env.DB)).run();
+    const result = await new PurgeService(createDatabase(env.DB), env.FILES).run();
     expect(result.sessions).toBeGreaterThanOrEqual(650);
     const remaining = await env.DB.prepare(
       'SELECT count(*) AS value FROM sessions WHERE expires_at < ?',

@@ -249,6 +249,161 @@ describe('task types', () => {
   });
 });
 
+describe('task priority', () => {
+  it('defaults to normal, filters, and records changes', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+
+    const plain = await createTask(member.api, project.id, { title: 'Plain' });
+    expect(plain.priority).toBe('normal');
+    const urgent = await createTask(member.api, project.id, { title: 'Now', priority: 'urgent' });
+    expect(urgent.priority).toBe('urgent');
+
+    const bad = await member.api('POST', `/api/projects/${project.id}/tasks`, {
+      title: 'Bad',
+      priority: 'panic',
+    });
+    expect(bad.status).toBe(422);
+
+    const filtered = await member.api('GET', `/api/projects/${project.id}/tasks?priority=urgent`);
+    expect(filtered.body.data.items.map((item: { id: string }) => item.id)).toEqual([urgent.id]);
+
+    const raised = await member.api('PATCH', `/api/tasks/${plain.id}`, { priority: 'high' });
+    expect(raised.body.data.priority).toBe('high');
+    const history = await member.api('GET', `/api/tasks/${plain.id}/activity`);
+    const changes = history.body.data.items.flatMap(
+      (item: { payload: { changes?: { field: string; to?: string }[] } }) =>
+        item.payload.changes ?? [],
+    );
+    expect(changes).toContainEqual({ field: 'priority', from: 'normal', to: 'high' });
+  });
+});
+
+describe('task ordering', () => {
+  async function setPositions(positions: Record<string, number>) {
+    await env.DB.batch(
+      Object.entries(positions).map(([taskId, position]) =>
+        env.DB.prepare('UPDATE tasks SET position = ? WHERE id = ?').bind(position, taskId),
+      ),
+    );
+  }
+
+  it('places tasks next to a neighbour and renumbers when out of room', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const [todo, doing] = project.stages;
+    const [a, b, c] = [
+      await createTask(member.api, project.id, { title: 'A' }),
+      await createTask(member.api, project.id, { title: 'B' }),
+      await createTask(member.api, project.id, { title: 'C' }),
+    ];
+    await setPositions({ [a.id]: 3000, [b.id]: 2000, [c.id]: 1000 });
+    const column = async (stageId = todo!.id) =>
+      (
+        await member.api('GET', `/api/projects/${project.id}/tasks?stageId=${stageId}`)
+      ).body.data.items.map((item: { title: string }) => item.title);
+    expect(await column()).toEqual(['A', 'B', 'C']);
+
+    const between = await member.api('POST', `/api/tasks/${c.id}/move`, {
+      stageId: todo!.id,
+      afterTaskId: a.id,
+    });
+    expect(between.status).toBe(200);
+    expect(between.body.data.position).toBe(2500);
+    expect(await column()).toEqual(['A', 'C', 'B']);
+
+    await member.api('POST', `/api/tasks/${b.id}/move`, { stageId: todo!.id, beforeTaskId: a.id });
+    expect(await column()).toEqual(['B', 'A', 'C']);
+
+    // Adjacent positions leave no room, so the column is renumbered.
+    await setPositions({ [b.id]: 11, [a.id]: 10, [c.id]: 9 });
+    await member.api('POST', `/api/tasks/${c.id}/move`, { stageId: todo!.id, beforeTaskId: a.id });
+    expect(await column()).toEqual(['B', 'C', 'A']);
+    const positions = (
+      await member.api('GET', `/api/projects/${project.id}/tasks?stageId=${todo!.id}`)
+    ).body.data.items.map((item: { position: number }) => item.position);
+    expect(positions[0] - positions[1]).toBe(1024);
+    expect(positions[1] - positions[2]).toBe(1024);
+
+    // Moving into another stage can also pick a spot.
+    const d = await createTask(member.api, project.id, { title: 'D', stageId: doing!.id });
+    const e = await createTask(member.api, project.id, { title: 'E', stageId: doing!.id });
+    await setPositions({ [d.id]: 5000, [e.id]: 4000 });
+    await member.api('POST', `/api/tasks/${a.id}/move`, { stageId: doing!.id, afterTaskId: d.id });
+    expect(await column(doing!.id)).toEqual(['D', 'A', 'E']);
+    expect(await column()).toEqual(['B', 'C']);
+  });
+
+  it('rejects bad neighbours and skips history for pure reorders', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const [todo, doing] = project.stages;
+    const a = await createTask(member.api, project.id, { title: 'A' });
+    const b = await createTask(member.api, project.id, { title: 'B' });
+    const elsewhere = await createTask(member.api, project.id, {
+      title: 'Elsewhere',
+      stageId: doing!.id,
+    });
+
+    const wrongStage = await member.api('POST', `/api/tasks/${a.id}/move`, {
+      stageId: todo!.id,
+      afterTaskId: elsewhere.id,
+    });
+    expect(wrongStage.status).toBe(409);
+    expect(wrongStage.body.error.field).toBe('afterTaskId');
+
+    const self = await member.api('POST', `/api/tasks/${a.id}/move`, {
+      stageId: todo!.id,
+      beforeTaskId: a.id,
+    });
+    expect(self.status).toBe(422);
+
+    const both = await member.api('POST', `/api/tasks/${a.id}/move`, {
+      stageId: todo!.id,
+      beforeTaskId: b.id,
+      afterTaskId: b.id,
+    });
+    expect(both.status).toBe(422);
+
+    const before = await member.api('GET', `/api/tasks/${a.id}/activity`);
+    await member.api('POST', `/api/tasks/${a.id}/move`, { stageId: todo!.id, afterTaskId: b.id });
+    const after = await member.api('GET', `/api/tasks/${a.id}/activity`);
+    expect(after.body.data.items).toHaveLength(before.body.data.items.length);
+  });
+
+  it('reorders subtasks within their parent', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member } = org.users;
+    const project = await createProject(owner.api, org.orgId);
+    const [todo] = project.stages;
+    const parent = await createTask(member.api, project.id, { title: 'Parent' });
+    const other = await createTask(member.api, project.id, { title: 'Other' });
+    const subtask = async (title: string) =>
+      (await member.api('POST', `/api/tasks/${parent.id}/subtasks`, { title })).body.data;
+    const [one, two, three] = [await subtask('One'), await subtask('Two'), await subtask('Three')];
+    await setPositions({ [one.id]: 1000, [two.id]: 2000, [three.id]: 3000 });
+    const order = async () =>
+      (await member.api('GET', `/api/tasks/${parent.id}/subtasks`)).body.data.map(
+        (item: { title: string }) => item.title,
+      );
+
+    await member.api('POST', `/api/tasks/${three.id}/move`, {
+      stageId: todo!.id,
+      beforeTaskId: one.id,
+    });
+    expect(await order()).toEqual(['Three', 'One', 'Two']);
+
+    const notSibling = await member.api('POST', `/api/tasks/${one.id}/move`, {
+      stageId: todo!.id,
+      afterTaskId: other.id,
+    });
+    expect(notSibling.status).toBe(409);
+  });
+});
+
 describe('subtasks', () => {
   it('creates subtasks and reports counts on parents', async ({ expect }) => {
     const org = await seedOrg();
@@ -466,7 +621,7 @@ describe('purge', () => {
       ),
       env.DB.prepare('UPDATE projects SET deleted_at = ? WHERE id = ?').bind(longAgo, project.id),
     ]);
-    const result = await new PurgeService(createDatabase(env.DB)).run();
+    const result = await new PurgeService(createDatabase(env.DB), env.FILES).run();
     expect(result.comments).toBeGreaterThanOrEqual(1);
     expect(result.projects).toBeGreaterThanOrEqual(1);
 
