@@ -38,6 +38,14 @@ export class TaskController {
       return c.json({ data }, 201);
     });
 
+    app.get('/api/orgs/:orgId/tasks/by-key/:key', async (c) => {
+      const actor = requireActor(c);
+      const orgId = parseId(c.req.param('orgId'));
+      const data = await this.taskService.getByKey(actor, orgId, c.req.param('key'));
+
+      return c.json({ data });
+    });
+
     app.get('/api/tasks/:id', async (c) => {
       const actor = requireActor(c);
       const taskId = parseId(c.req.param('id'));
@@ -117,14 +125,6 @@ export class TaskController {
       const actor = requireActor(c);
       const projectId = parseId(c.req.param('id'));
       const data = await this.taskService.archiveDone(actor, projectId);
-
-      return c.json({ data });
-    });
-
-    app.get('/api/orgs/:orgId/tasks/mine', async (c) => {
-      const actor = requireActor(c);
-      const orgId = parseId(c.req.param('orgId'));
-      const data = await this.taskService.mine(actor, orgId);
 
       return c.json({ data });
     });

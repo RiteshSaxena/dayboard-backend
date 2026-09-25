@@ -7,8 +7,9 @@ import { notes, projectStages, projects, tasks, type Project } from '../../datab
 import type { AuthActor } from '../auth/auth.types';
 import type { ActivityService } from '../activity/activity.service';
 import type { AuthorizationService } from '../authorization/authorization.service';
+import { generateProjectKey } from './project-key';
 import { buildStarterStages } from '../stage/stage.service';
-import { countSubtasks, withSubtaskCounts } from '../task/task.service';
+import { countSubtasks, withSubtaskCounts, withTaskKeys } from '../task/task.service';
 import type { TaskTypeService } from '../task-type/task-type.service';
 
 /** First color of the frontend project palette (`PROJECT_COLORS` in frontend/src/lib/board-data.ts). */
@@ -20,11 +21,15 @@ export function buildProject(input: {
   name: string;
   color: string;
   timestamp: number;
+  /** Keys already used in the org; the new key avoids them. */
+  takenKeys?: Iterable<string>;
 }): Project {
   return {
     id: createId(),
     orgId: input.orgId,
     name: input.name,
+    key: generateProjectKey(input.name, input.takenKeys ?? []),
+    taskCounter: 0,
     color: input.color,
     position: input.timestamp,
     archivedAt: null,
@@ -71,7 +76,17 @@ export class ProjectService {
       throw new ApiError(409, 'conflict', 'This organization has reached its project limit');
     }
     const timestamp = now();
-    const project = buildProject({ orgId, createdBy: actor.user.id, ...input, timestamp });
+    const takenKeys = await this.db
+      .select({ key: projects.key })
+      .from(projects)
+      .where(eq(projects.orgId, orgId));
+    const project = buildProject({
+      orgId,
+      createdBy: actor.user.id,
+      ...input,
+      timestamp,
+      takenKeys: takenKeys.flatMap((row) => (row.key ? [row.key] : [])),
+    });
     const stages = buildStarterStages(project.id, timestamp);
     await this.db.batch([
       this.db.insert(projects).values(project),
@@ -203,12 +218,20 @@ export class ProjectService {
         .orderBy(desc(notes.pinned), desc(notes.position), desc(notes.id)),
     ]);
     const allTasks = taskRows.map((row) => row.task);
+    // Every project in the org, so a task moved out of an archived project still shows its key.
+    const keyRows = await this.db
+      .select({ id: projects.id, key: projects.key })
+      .from(projects)
+      .where(eq(projects.orgId, orgId));
+    const projectKeys = new Map(
+      keyRows.flatMap((row) => (row.key ? [[row.id, row.key] as const] : [])),
+    );
     return {
       projects: projectRows,
       stages: stageRows.map((row) => row.stage),
       taskTypes: taskTypeRows,
       // subtasks are board cards too (linked by parentId); parents also carry their subtask counts
-      tasks: withSubtaskCounts(allTasks, countSubtasks(allTasks)),
+      tasks: withTaskKeys(withSubtaskCounts(allTasks, countSubtasks(allTasks)), projectKeys),
       notes: noteRows.map((row) => row.note),
     };
   }

@@ -16,14 +16,13 @@
   "compatibility_date": "2026-09-14",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    // Public address of this API. File links are built from it, because `wrangler dev` reports
-    // request URLs as the first configured route. `.dev.vars` overrides it locally.
     "API_URL": "https://api.dayboard.space",
     "APP_URL": "https://app.dayboard.space",
-    "ALLOWED_ORIGINS": "https://dayboard.space,https://app.dayboard.space",
-    "TURNSTILE_HOSTNAMES": "dayboard.space,app.dayboard.space",
+    "ALLOWED_ORIGINS": "https://app.dayboard.space",
+    "TURNSTILE_HOSTNAMES": "app.dayboard.space",
     "EMAIL_FROM": "Dayboard <noreply@dayboard.space>",
     "EMAIL_REPLY_TO": "hello@dayboard.space",
+    "SMTP_HOST": "email-smtp.ap-south-1.amazonaws.com",
     "SMTP_PORT": "587",
     "SMTP_SECURITY": "starttls",
     "R2_ACCOUNT_ID": "e3596506633da2beea00357283c9b414",
@@ -32,7 +31,6 @@
   "secrets": {
     "required": [
       "TURNSTILE_SECRET",
-      "SMTP_HOST",
       "SMTP_USERNAME",
       "SMTP_PASSWORD",
       "FILE_URL_SECRET",

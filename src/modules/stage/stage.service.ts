@@ -34,7 +34,7 @@ export function buildStarterStages(projectId: string, timestamp: number): Projec
 
 /**
  * Columns to set when a task enters a stage. `status` mirrors the stage category so completion,
- * archiving, and "my tasks" keep working. `completedAt` is kept when moving between done stages.
+ * archiving, and status filters keep working. `completedAt` is kept when moving between done stages.
  */
 export function stageAssignment(stage: ProjectStage, timestamp: number) {
   return {

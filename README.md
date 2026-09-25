@@ -1,6 +1,6 @@
 # Dayboard API
 
-Cloudflare Workers API for Dayboard, built with Hono, D1, Drizzle, bearer tokens, Turnstile, and direct SMTP through `worker-mailer`.
+Cloudflare Workers API for Dayboard, built with Hono, D1, Drizzle, bearer tokens, Turnstile, R2 for attachments, and SMTP email through `worker-mailer`.
 
 ## Structure
 
@@ -68,14 +68,18 @@ Only the SHA-256 token hash is stored in D1.
 Before deployment:
 
 1. Create the `dayboard` D1 database and replace `REPLACE_WITH_D1_DATABASE_ID` in `wrangler.jsonc`.
-2. Set `TURNSTILE_SECRET`, `SMTP_HOST`, `SMTP_USERNAME`, and `SMTP_PASSWORD` as Worker secrets.
-3. Configure `TURNSTILE_HOSTNAMES`, `ALLOWED_ORIGINS`, and the SMTP settings in `wrangler.jsonc`.
+2. Set `TURNSTILE_SECRET` and `FILE_URL_SECRET` as Worker secrets, plus `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` for attachment uploads, and `SMTP_USERNAME` and `SMTP_PASSWORD` when sending over SMTP.
+3. Configure `TURNSTILE_HOSTNAMES`, `ALLOWED_ORIGINS`, and the email settings in `wrangler.jsonc`.
 4. Apply migrations with `npm run db:migrate:remote`.
 5. Deploy with `npm run deploy`.
 
-SMTP sends directly during `ctx.waitUntil()` using `worker-mailer`. No Queue resources are required.
+## Email
 
-Google login, realtime updates, and import/export are outside the current scope.
+Mail goes out over SMTP through `worker-mailer`, configured with `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY`, `SMTP_USERNAME`, and `SMTP_PASSWORD`.
+
+Cloudflare's own relay (`smtp.mx.cloudflare.net`) cannot be used from a Worker: outbound TCP sockets to Cloudflare addresses are blocked. Any other SMTP host works.
+
+Sending happens during `ctx.waitUntil()`, so a slow mail server never delays a request, and no Queue resources are required.
 
 ## License
 

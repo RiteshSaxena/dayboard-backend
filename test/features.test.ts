@@ -9,7 +9,7 @@ const DAY = 86_400_000;
 async function createProject(api: Api, orgId: string, name = 'Website') {
   const response = await api('POST', `/api/orgs/${orgId}/projects`, { name, color: 'moss' });
   if (response.status !== 201) throw new Error(`project create failed: ${response.status}`);
-  return response.body.data as { id: string; stages: { id: string; name: string }[] };
+  return response.body.data as { id: string; key: string; stages: { id: string; name: string }[] };
 }
 
 async function createTask(api: Api, projectId: string, body: Record<string, unknown> = {}) {
@@ -280,6 +280,84 @@ describe('task priority', () => {
   });
 });
 
+describe('task keys', () => {
+  it('numbers tasks per project and keeps the key when a task moves', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner, member, guest } = org.users;
+    const source = await createProject(owner.api, org.orgId, 'Website');
+    const target = await createProject(owner.api, org.orgId, 'Api');
+    expect(source.key).toMatch(/^W[A-Z2-9]{2}$/);
+    expect(target.key).toMatch(/^A[A-Z2-9]{2}$/);
+    expect(source.key).not.toBe(target.key);
+
+    const first = await createTask(member.api, source.id, { title: 'First' });
+    const second = await createTask(member.api, source.id, { title: 'Second' });
+    const elsewhere = await createTask(member.api, target.id, { title: 'Elsewhere' });
+    expect([first.number, second.number, elsewhere.number]).toEqual([1, 2, 1]);
+    expect(first.key).toBe(`${source.key}-1`);
+    expect(elsewhere.key).toBe(`${target.key}-1`);
+
+    // Subtasks take their own number from the same project.
+    const subtask = (await member.api('POST', `/api/tasks/${first.id}/subtasks`, { title: 'Sub' }))
+      .body.data;
+    expect(subtask.key).toBe(`${source.key}-3`);
+
+    const found = await guest.api('GET', `/api/orgs/${org.orgId}/tasks/by-key/${first.key}`);
+    expect(found.status).toBe(200);
+    expect(found.body.data).toMatchObject({ id: first.id, key: first.key, orgId: org.orgId });
+    const lowercase = await guest.api(
+      'GET',
+      `/api/orgs/${org.orgId}/tasks/by-key/${first.key.toLowerCase()}`,
+    );
+    expect(lowercase.body.data.id).toBe(first.id);
+
+    // The key belongs to the task, not to wherever it currently lives.
+    const moved = await member.api('PATCH', `/api/tasks/${first.id}`, { projectId: target.id });
+    expect(moved.body.data).toMatchObject({ projectId: target.id, key: `${source.key}-1` });
+    expect(
+      (await guest.api('GET', `/api/orgs/${org.orgId}/tasks/by-key/${first.key}`)).status,
+    ).toBe(200);
+    // ... and the target project keeps its own sequence, so nothing collides.
+    const next = await createTask(member.api, target.id, { title: 'Next' });
+    expect(next.key).toBe(`${target.key}-2`);
+
+    const board = await guest.api('GET', `/api/orgs/${org.orgId}/board`);
+    const keys = board.body.data.tasks.map((task: { key: string }) => task.key).sort();
+    expect(keys).toEqual(
+      [
+        `${source.key}-1`,
+        `${source.key}-2`,
+        `${source.key}-3`,
+        `${target.key}-1`,
+        `${target.key}-2`,
+      ].sort(),
+    );
+
+    expect(
+      (await guest.api('GET', `/api/orgs/${org.orgId}/tasks/by-key/${source.key}-99`)).status,
+    ).toBe(404);
+    expect((await guest.api('GET', `/api/orgs/${org.orgId}/tasks/by-key/nonsense`)).status).toBe(
+      404,
+    );
+    const other = await seedOrg();
+    expect(
+      (await other.users.owner.api('GET', `/api/orgs/${org.orgId}/tasks/by-key/${first.key}`))
+        .status,
+    ).toBe(404);
+  });
+
+  it('gives every project in an org a distinct key', async ({ expect }) => {
+    const org = await seedOrg();
+    const { owner } = org.users;
+    const names = ['Website', 'Web app', 'Web tools', '2026 launch'];
+    const created = [];
+    for (const name of names) created.push(await createProject(owner.api, org.orgId, name));
+    const keys = created.map((project) => project.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys[3]).toMatch(/^P[A-Z2-9]{2}$/);
+  });
+});
+
 describe('task ordering', () => {
   async function setPositions(positions: Record<string, number>) {
     await env.DB.batch(
@@ -441,33 +519,6 @@ describe('subtasks', () => {
       subtaskDoneCount: 1,
     });
     expect(boardTasks.filter((item) => item.parentId === parent.id)).toHaveLength(2);
-  });
-
-  it('lists my open and done tasks and subtasks until they are archived', async ({ expect }) => {
-    const org = await seedOrg();
-    const { owner, member } = org.users;
-    const project = await createProject(owner.api, org.orgId);
-    const open = await createTask(member.api, project.id, { title: 'Open', assigneeId: member.id });
-    const done = await createTask(member.api, project.id, {
-      title: 'Done',
-      status: 'done',
-      assigneeId: member.id,
-    });
-    await createTask(member.api, project.id, { title: 'Theirs', assigneeId: owner.id });
-    const subtask = await member.api('POST', `/api/tasks/${open.id}/subtasks`, {
-      title: 'Step',
-      assigneeId: member.id,
-    });
-    await member.api('POST', `/api/tasks/${subtask.body.data.id}/move`, { status: 'done' });
-
-    const titles = async () =>
-      (await member.api('GET', `/api/orgs/${org.orgId}/tasks/mine`)).body.data
-        .map((item: { title: string }) => item.title)
-        .sort();
-    expect(await titles()).toEqual(['Done', 'Open', 'Step']);
-
-    await member.api('POST', `/api/tasks/${done.id}/archive`);
-    expect(await titles()).toEqual(['Open', 'Step']);
   });
 
   it('gets one task with its subtask counts, including archived tasks', async ({ expect }) => {

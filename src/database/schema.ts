@@ -147,6 +147,10 @@ export const projects = sqliteTable(
       .notNull()
       .references(() => orgs.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
+    // Short human-readable code, unique within the org, e.g. `WK7`. Never changes.
+    key: text('key'),
+    // Last task number handed out in this project; claimed atomically on task creation.
+    taskCounter: integer('task_counter'),
     color: text('color').notNull(),
     position: integer('position').notNull(),
     archivedAt: integer('archived_at'),
@@ -157,6 +161,7 @@ export const projects = sqliteTable(
   },
   (table) => [
     index('projects_org_position_idx').on(table.orgId, table.deletedAt, table.position),
+    uniqueIndex('projects_org_key_unique').on(table.orgId, table.key),
     check('projects_name_length', sql`length(${table.name}) between 1 and 40`),
   ],
 );
@@ -217,6 +222,10 @@ export const tasks = sqliteTable(
     title: text('title').notNull(),
     description: text('description').notNull().default(''),
     status: text('status', { enum: ['todo', 'doing', 'done'] }).notNull(),
+    // Running number within the project that issued it. With that project's key it forms the
+    // task's readable key, e.g. `WK7-42`, which stays the same even if the task moves.
+    number: integer('number'),
+    keyProjectId: text('key_project_id', { length: 21 }).references(() => projects.id),
     // Nullable: tasks created before priorities existed have none, and the API treats that as normal.
     priority: text('priority', { enum: ['low', 'normal', 'high', 'urgent'] }),
     assigneeId: text('assignee_id', { length: 21 }).references(() => users.id),
@@ -234,6 +243,7 @@ export const tasks = sqliteTable(
     index('tasks_parent_idx').on(table.parentId, table.deletedAt),
     index('tasks_stage_idx').on(table.stageId),
     index('tasks_type_idx').on(table.typeId),
+    uniqueIndex('tasks_key_unique').on(table.keyProjectId, table.number),
     check('tasks_title_length', sql`length(${table.title}) between 1 and 240`),
     check('tasks_description_length', sql`length(${table.description}) <= 2000`),
     check('tasks_status_check', sql`${table.status} in ('todo', 'doing', 'done')`),

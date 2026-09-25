@@ -24,6 +24,7 @@ import type { AuthActor } from '../auth/auth.types';
 import type { AuthorizationService } from '../authorization/authorization.service';
 import type { NotificationService } from '../notification/notification.service';
 import { stageAssignment, type StageCategory, type StageService } from '../stage/stage.service';
+import { parseTaskKey } from '../project/project-key';
 import type { TaskTypeService } from '../task-type/task-type.service';
 
 const PAGE_SIZE = 200;
@@ -86,6 +87,17 @@ export function countSubtasks(rows: Pick<Task, 'parentId' | 'status'>[]): Subtas
   return counts;
 }
 
+/**
+ * Adds the readable `key` (`WK7-42`) to tasks, from the key of the project that issued the number.
+ * It stays with the task when it moves to another project, so links and mentions keep working.
+ */
+export function withTaskKeys<T extends Task>(rows: T[], projectKeys: ReadonlyMap<string, string>) {
+  return rows.map((task) => {
+    const prefix = task.keyProjectId ? projectKeys.get(task.keyProjectId) : undefined;
+    return { ...task, key: prefix && task.number ? `${prefix}-${task.number}` : null };
+  });
+}
+
 export function withSubtaskCounts<T extends Task>(parents: T[], counts: SubtaskCounts) {
   return parents.map((task) => ({
     ...task,
@@ -105,6 +117,28 @@ export class TaskService {
   ) {}
 
   /** Lists top-level tasks; subtasks are fetched through their parent. */
+  /** Finds a task by its readable key, e.g. `WK7-42`. Case-insensitive. */
+  async getByKey(actor: AuthActor, orgId: string, key: string) {
+    await this.authorization.requireOrg(actor, orgId);
+    const parsed = parseTaskKey(key);
+    if (!parsed) throw notFound('Task');
+    const [row] = await this.db
+      .select({ id: tasks.id })
+      .from(tasks)
+      .innerJoin(projects, eq(tasks.keyProjectId, projects.id))
+      .where(
+        and(
+          eq(projects.orgId, orgId),
+          eq(projects.key, parsed.projectKey),
+          eq(tasks.number, parsed.number),
+          isNull(tasks.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!row) throw notFound('Task');
+    return this.get(actor, row.id);
+  }
+
   /** One task or subtask, archived or not, with its subtask counts. For the task page and shared links. */
   async get(actor: AuthActor, id: string) {
     const { task, project } = await this.authorization.requireTask(actor, id);
@@ -113,8 +147,9 @@ export class TaskService {
       .from(tasks)
       .where(and(eq(tasks.parentId, id), isNull(tasks.deletedAt)));
     const [withCounts] = withSubtaskCounts([task], countSubtasks(subtasks));
+    const [withKey] = await this.attachKeys(project.orgId, [withCounts!]);
     // a link names only the task, so the app learns which org to open from here
-    return { ...withCounts!, orgId: project.orgId };
+    return { ...withKey!, orgId: project.orgId };
   }
 
   async list(
@@ -129,7 +164,7 @@ export class TaskService {
       cursor?: string;
     },
   ) {
-    await this.authorization.requireProject(actor, projectId);
+    const { project } = await this.authorization.requireProject(actor, projectId);
     const conditions: SQL[] = [
       eq(tasks.projectId, projectId),
       isNull(tasks.parentId),
@@ -158,7 +193,7 @@ export class TaskService {
     const items = rows.slice(0, PAGE_SIZE);
     const counts = await this.subtaskCounts(projectId);
     return {
-      items: withSubtaskCounts(items, counts),
+      items: await this.attachKeys(project.orgId, withSubtaskCounts(items, counts)),
       cursor: hasMore ? makeCursor(items.at(-1)) : null,
     };
   }
@@ -169,11 +204,12 @@ export class TaskService {
   }
 
   async listSubtasks(actor: AuthActor, parentId: string) {
-    await this.authorization.requireTask(actor, parentId);
-    return this.db.query.tasks.findMany({
+    const { project } = await this.authorization.requireTask(actor, parentId);
+    const rows = await this.db.query.tasks.findMany({
       where: and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)),
       orderBy: [asc(tasks.position), asc(tasks.id)],
     });
+    return this.attachKeys(project.orgId, rows);
   }
 
   async createSubtask(actor: AuthActor, parentId: string, input: TaskInput) {
@@ -405,7 +441,8 @@ export class TaskService {
       kind: 'task.restored',
       payload: task,
     });
-    return task;
+    const [withKey] = await this.attachKeys(row.project.orgId, [task]);
+    return withKey!;
   }
 
   /** Archives done top-level tasks and their subtasks. `count` covers top-level tasks only. */
@@ -457,26 +494,6 @@ export class TaskService {
     return { count: archived };
   }
 
-  async mine(actor: AuthActor, orgId: string) {
-    await this.authorization.requireOrg(actor, orgId);
-    const rows = await this.db
-      .select({ task: tasks })
-      .from(tasks)
-      .innerJoin(projects, eq(tasks.projectId, projects.id))
-      .where(
-        and(
-          eq(projects.orgId, orgId),
-          eq(tasks.assigneeId, actor.user.id),
-          // done work stays listed until it is archived, so clients can show progress
-          isNull(tasks.archivedAt),
-          isNull(tasks.deletedAt),
-          isNull(projects.deletedAt),
-        ),
-      )
-      .orderBy(desc(tasks.position));
-    return rows.map((row) => row.task);
-  }
-
   private async insertTask(
     actor: AuthActor,
     project: Project,
@@ -486,10 +503,13 @@ export class TaskService {
     await this.validateAssignee(project.orgId, input.assigneeId);
     await this.taskTypes.requireInOrg(project.orgId, input.typeId);
     const stage = await this.stages.resolveForTask(project.id, input);
+    const number = await this.claimNumber(project.id);
     const timestamp = now();
     const task: Task = {
       id: createId(),
       projectId: project.id,
+      number,
+      keyProjectId: project.id,
       parentId,
       stageId: stage.id,
       typeId: input.typeId ?? null,
@@ -517,7 +537,8 @@ export class TaskService {
       payload: task,
     });
     this.notifications.taskAssigned(actor, task, null);
-    return task;
+    const [withKey] = await this.attachKeys(project.orgId, [task]);
+    return withKey!;
   }
 
   /** Records `task.updated` with the task after the change and what changed since `before`. */
@@ -530,7 +551,8 @@ export class TaskService {
     const task = await this.findTaskById(before.id);
     if (!task) throw notFound('Task');
     const changes = taskChanges(before, task);
-    if (options.onlyIfChanged && changes.length === 0) return task;
+    const [withKey] = await this.attachKeys(project.orgId, [task]);
+    if (options.onlyIfChanged && changes.length === 0) return withKey!;
     await this.activity.record({
       orgId: project.orgId,
       projectId: task.projectId,
@@ -539,7 +561,20 @@ export class TaskService {
       kind: 'task.updated',
       payload: { ...task, changes },
     });
-    return task;
+    return withKey!;
+  }
+
+  /** Project keys for an org, for composing readable task keys. */
+  private async attachKeys<T extends Task>(orgId: string, rows: T[]) {
+    if (rows.length === 0) return [] as ReturnType<typeof withTaskKeys<T>>;
+    const keyRows = await this.db
+      .select({ id: projects.id, key: projects.key })
+      .from(projects)
+      .where(eq(projects.orgId, orgId));
+    return withTaskKeys(
+      rows,
+      new Map(keyRows.flatMap((row) => (row.key ? [[row.id, row.key] as const] : []))),
+    );
   }
 
   /**
@@ -624,6 +659,20 @@ export class TaskService {
       position: spaced.find((row) => row.id === task.id)!.position,
       renumber: spaced.filter((row) => row.id !== task.id),
     };
+  }
+
+  /**
+   * Takes the next task number for a project. The counter moves in one statement, so two tasks
+   * created at the same moment can never take the same number.
+   */
+  private async claimNumber(projectId: string): Promise<number> {
+    const [row] = await this.db
+      .update(projects)
+      .set({ taskCounter: sql`coalesce(${projects.taskCounter}, 0) + 1` })
+      .where(eq(projects.id, projectId))
+      .returning({ number: projects.taskCounter });
+    if (!row?.number) throw notFound('Project');
+    return row.number;
   }
 
   private async subtaskCounts(projectId: string): Promise<SubtaskCounts> {
